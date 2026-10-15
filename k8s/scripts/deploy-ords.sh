@@ -74,9 +74,10 @@ trap cleanup EXIT
 
 ask_password() {   # ask_password "label" -> prints the password; never echoed or saved
   local a b
+  [ -t 0 ] || { echo "Asking for the $1 needs a terminal: run this script interactively." >&2; exit 1; }
   while true; do
-    read -rsp "$1: " a; echo >&2
-    read -rsp "Repeat $1: " b; echo >&2
+    read -rsp "$1: " a || exit 1; echo >&2
+    read -rsp "Repeat $1: " b || exit 1; echo >&2
     [ -n "$a" ] && [ "$a" = "$b" ] && break
     echo "Passwords were empty or didn't match, try again." >&2
   done
@@ -105,9 +106,12 @@ openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -checkend $((30*86400)) >/dev/null
   || echo "WARNING: the certificate expires within 30 days: $(openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -enddate)"
 cat "$SSL_DIR/$CERT_FILE" "$SSL_DIR/$CHAIN_FILE" > "$work/tls.crt"
 openssl pkey -in "$SSL_DIR/$KEY_FILE" -out "$work/tls.key"
-[ "$(openssl x509 -in "$work/tls.crt" -noout -pubkey | openssl sha256)" = \
-  "$(openssl pkey -in "$work/tls.key" -pubout | openssl sha256)" ] \
-  || { echo "$KEY_FILE doesn't match $CERT_FILE." >&2; exit 1; }
+cert_pub=$(openssl x509 -in "$work/tls.crt" -noout -pubkey | openssl sha256)
+key_pub=$(openssl pkey -in "$work/tls.key" -pubout | openssl sha256)
+if [ -z "$cert_pub" ] || [ "$cert_pub" != "$key_pub" ]; then
+  echo "$KEY_FILE doesn't match $CERT_FILE." >&2
+  exit 1
+fi
 kubectl create secret tls ords-tls -n "$NAMESPACE" --cert="$work/tls.crt" --key="$work/tls.key" \
   --dry-run=client -o yaml | kubectl apply -f -
 rm -f "$work/tls.crt" "$work/tls.key"
@@ -116,7 +120,9 @@ echo "Certificate: $(openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -subject -end
 # 2. ORDS_PUBLIC_USER password
 if ! kubectl get secret ords-db-runtime -n "$NAMESPACE" >/dev/null 2>&1; then
   echo "Enter the ORDS_PUBLIC_USER password the existing ORDS server uses (its pool's db.password)."
-  secret_from_value ords-db-runtime ORACLE_USER_PWD "$(ask_password 'ORDS_PUBLIC_USER password')"
+  pw=$(ask_password 'ORDS_PUBLIC_USER password')
+  secret_from_value ords-db-runtime ORACLE_USER_PWD "$pw"
+  unset pw
 fi
 
 # 3. Database connection details (not secret). write_db_config <APEX version>
@@ -183,7 +189,9 @@ if [ "$db_ords" != "$ORDS_TAG" ]; then
   fi
   echo "Enter the SYS password for $DB_HOST:$DB_PORT/$DB_SERVICE. It's used once and then deleted."
   sys_secret=true
-  secret_from_value ords-db-admin ORACLE_PWD "$(ask_password 'SYS password')"
+  pw=$(ask_password 'SYS password')
+  secret_from_value ords-db-admin ORACLE_PWD "$pw"
+  unset pw
   kubectl delete job ords-install -n "$NAMESPACE" --ignore-not-found
   render "$MANIFESTS/ords-install-job.yaml" | kubectl apply -f -
   echo "Installing ORDS $ORDS_TAG in the database..."

@@ -22,9 +22,12 @@ if [ ! -f /etc/kubernetes/admin.conf ]; then
   # Encrypt Secrets (database passwords, the TLS key) in etcd, and so in etcd backups.
   # The key is made here and kept only on this node (etcd-backup.sh saves it), never in git.
   if [ ! -f "$ENC_DIR/encryption-config.yaml" ]; then
+    key=$(head -c 32 /dev/urandom | base64)
+    [ "${#key}" -eq 44 ] || { echo "Could not generate the encryption key." >&2; exit 1; }
     install -d -m 0700 "$ENC_DIR"
+    # Written to a temporary name and renamed, so a failure never leaves a broken file
     ( umask 077
-      cat > "$ENC_DIR/encryption-config.yaml" <<EOF
+      cat > "$ENC_DIR/encryption-config.yaml.new" <<EOF
 apiVersion: apiserver.config.k8s.io/v1
 kind: EncryptionConfiguration
 resources:
@@ -33,10 +36,12 @@ resources:
       - secretbox:
           keys:
             - name: key1
-              secret: $(head -c 32 /dev/urandom | base64)
+              secret: $key
       - identity: {}
 EOF
     )
+    mv "$ENC_DIR/encryption-config.yaml.new" "$ENC_DIR/encryption-config.yaml"
+    unset key
   fi
   install -D -m 0600 "$K8S/manifests/audit-policy.yaml" /etc/kubernetes/audit/policy.yaml
   kubeadm config validate --config "$CONFIG"

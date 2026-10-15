@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Helpers shared by the k8s scripts. Sourced, not run; the caller sets K8S (the k8s/ folder).
 
+: "${K8S:?common.sh: set K8S to the k8s/ folder before sourcing it}"
 UPSTREAM_PINS="$K8S/config/upstream.sha256"
 
 # fetch_verified <url> <file>: download an upstream manifest and check it against its

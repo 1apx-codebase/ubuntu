@@ -114,6 +114,7 @@ PY
 echo "== Values that must agree across files"
 same() {  # same <description> <value> <value>...
   local d=$1 v=$2; shift 2
+  [ -n "$v" ] || { fail "$d: couldn't read the value"; return; }
   for x in "$@"; do [ "$x" = "$v" ] || { fail "$d differs: '$v' vs '$x'"; return; }; done
   pass "$d: $v"
 }
