@@ -161,7 +161,7 @@ admin = (30, ROW_Y, 260, ROW_H)
 users = (330, ROW_Y, 280, ROW_H)
 cflare = (690, ROW_Y, 280, ROW_H)
 router = (690, 214, 280, 72)
-labeled_box(*admin, ["Admin (vaviles)", "kubectl · SSH · git"], C["vm"], C["frame"], size=BODY, gap=24)
+labeled_box(*admin, ["Admin (<user>)", "kubectl · SSH · git"], C["vm"], C["frame"], size=BODY, gap=24)
 labeled_box(*users, ["Users (internet and LAN)", "https://www.1apx.com/"], C["vm"], C["frame"], size=BODY, gap=24)
 labeled_box(*cflare, ["Cloudflare", "www.1apx.com · proxied", "SSL/TLS Full (strict)"], C["ext"], C["extline"],
             size=BODY, gap=21)

@@ -2,6 +2,8 @@
 
 Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, on 2026-10-15.
 
+`<user>` stands for your personal login on k8-control (`USER_NAME` in `apply-changes.sh`).
+
 ## Contents
 
 - [Changes made after installation](#changes-made-after-installation)
@@ -38,7 +40,7 @@ Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, o
 
 | # | Change | File |
 |---|--------|------|
-| 1 | Passwordless sudo for `vaviles` | `/etc/sudoers.d/vaviles-nopasswd` (root:root, `0440`) |
+| 1 | Passwordless sudo for `<user>` | `/etc/sudoers.d/<user>-nopasswd` (root:root, `0440`) |
 | 2 | Static IP `192.168.1.170/24` on `ens18`, gateway `192.168.1.1` (was DHCP, `192.168.1.223`) | `/etc/netplan/00-installer-config.yaml` (`0600`) |
 | 3 | DNS servers `192.168.1.1`, `8.8.8.8` | same netplan file |
 
@@ -49,7 +51,7 @@ Backups on the host:
 
 Notes:
 
-- Sudo applies the last matching rule. `vaviles` is still in the `sudo` group, so `sudo -l -U vaviles` lists both `(ALL : ALL) ALL` and `NOPASSWD: ALL`, and no password is asked for.
+- Sudo applies the last matching rule. `<user>` is still in the `sudo` group, so `sudo -l -U <user>` lists both `(ALL : ALL) ALL` and `NOPASSWD: ALL`, and no password is asked for.
 - Before the change, `192.168.1.170` was confirmed unused (no ping reply, no ARP entry). Reserve it on the router, or exclude it from the DHCP pool, so no other device gets it.
 - IPv6 still uses DHCPv6.
 
@@ -116,7 +118,7 @@ Each worker is its own Ubuntu VM in Proxmox. To keep ORDS running if a Proxmox h
 | Account | Where | Used for |
 |---------|-------|----------|
 | `k8sadmin` | All three nodes | Dedicated cluster admin account. The scripts use it to log in to the workers. It has no password (SSH key only) and passwordless sudo |
-| `vaviles` | k8-control | Your personal login. It runs `kubectl`, the add-on and ORDS scripts, and git |
+| `<user>` | k8-control | Your personal login. It runs `kubectl`, the add-on and ORDS scripts, and git |
 
 On the workers, cloud-init creates only `k8sadmin`. To reach a worker, run `sudo -iu k8sadmin` on k8-control, then `ssh k8-worker-1`.
 
@@ -233,9 +235,9 @@ Notes:
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool.
 - **DNS records.** Add the "Before you start" rows of [DNS records to add](#dns-records-to-add): `node.1apx.com` (or set `DB_HOST_IP`), and optionally the node names. The Cloudflare records come later, at cutover.
 - **Proxmox details.** Check the VM storage name with `pvesm status` and the LAN bridge with `ip -br link` on the Proxmox host. The script assumes `local-lvm` and `vmbr0`, and needs Proxmox VE 7.2 or later.
-- **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `vaviles@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
+- **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `<user>@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
 
-In the steps below, run commands from the repo folder on k8-control, `/home/vaviles/codebase/github/ubuntu`.
+In the steps below, run commands from the repo folder on k8-control, `/home/<user>/codebase/github/ubuntu`.
 
 ### Step 1: Create the admin account (on k8-control)
 
@@ -285,7 +287,7 @@ Script: [`k8s/scripts/control-plane-init.sh`](k8s/scripts/control-plane-init.sh)
    Before that, it sets up two things the API server needs from its first start:
    - **Encrypted Secrets.** Secrets, such as the database passwords and the TLS key, are encrypted in etcd, and so in etcd backups. The key is generated on k8-control into `/etc/kubernetes/enc/` and never leaves it, except in the etcd backups, which need it to restore.
    - **Audit log.** The API server logs every change to the cluster in `/var/log/kubernetes/audit/`, keeping 30 days. The policy is [`k8s/manifests/audit-policy.yaml`](k8s/manifests/audit-policy.yaml). For Secrets and ConfigMaps it logs who did what, never their contents. To change the policy later, copy it to `/etc/kubernetes/audit/policy.yaml` and restart the API server: move `/etc/kubernetes/manifests/kube-apiserver.yaml` out of that folder, wait until `sudo crictl ps --name kube-apiserver` lists nothing, then move it back.
-2. Copies the admin kubeconfig to `~/.kube/config` for `vaviles` and `k8sadmin`, so `kubectl` works for both.
+2. Copies the admin kubeconfig to `~/.kube/config` for `<user>` and `k8sadmin`, so `kubectl` works for both.
 3. Installs Calico with the pod network set to `10.244.0.0/16`, and waits until the node is `Ready`.
 
 The control plane keeps its default taint, so ORDS and other workloads only run on the workers.
@@ -302,7 +304,7 @@ Check: `kubectl get nodes -o wide` lists all three nodes as `Ready` with their `
 
 ### Step 6: Install the add-ons
 
-Script: [`k8s/scripts/cluster-addons.sh`](k8s/scripts/cluster-addons.sh). Run `k8s/scripts/cluster-addons.sh` as `vaviles`.
+Script: [`k8s/scripts/cluster-addons.sh`](k8s/scripts/cluster-addons.sh). Run `k8s/scripts/cluster-addons.sh` as `<user>`.
 
 - **MetalLB** in layer-2 mode, with the pool `192.168.1.180`–`192.168.1.189` from [`k8s/manifests/addons/metallb-pool.yaml`](k8s/manifests/addons/metallb-pool.yaml). A `LoadBalancer` service gets one of these LAN IPs, and the worker running it answers ARP for it.
 - **metrics-server**, so `kubectl top nodes` and `kubectl top pods` work. It skips verifying kubelets' self-signed serving certificates, which is the usual setting for kubeadm clusters.
@@ -310,7 +312,7 @@ Script: [`k8s/scripts/cluster-addons.sh`](k8s/scripts/cluster-addons.sh). Run `k
 ### Step 7: Deploy ORDS
 
 Script: [`k8s/scripts/deploy-ords.sh`](k8s/scripts/deploy-ords.sh). It uses the settings in [`k8s/config/ords-settings.conf`](k8s/config/ords-settings.conf) and the manifests [`ords.yaml`](k8s/manifests/ords/ords.yaml), [`ords-preflight.yaml`](k8s/manifests/ords/ords-preflight.yaml) and [`ords-install-job.yaml`](k8s/manifests/ords/ords-install-job.yaml) in `k8s/manifests/ords/`.
-Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. `node.1apx.com` must resolve, or `DB_HOST_IP` be set (see [DNS records to add](#dns-records-to-add)). Then run `k8s/scripts/deploy-ords.sh` as `vaviles`, in an interactive terminal: it asks for passwords, and stops if it can't.
+Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. `node.1apx.com` must resolve, or `DB_HOST_IP` be set (see [DNS records to add](#dns-records-to-add)). Then run `k8s/scripts/deploy-ords.sh` as `<user>`, in an interactive terminal: it asks for passwords, and stops if it can't.
 
 **ORDS settings.** `k8s/config/ords-settings.conf` holds your existing server's `settings.xml` and `pool.xml` settings, one `key value` per line. Every pod applies them when it starts. Changes from the old server:
 
@@ -344,7 +346,7 @@ To change a setting, edit `ords-settings.conf` and run the script again. It repl
 
 ### Step 8: Check the cluster
 
-On k8-control, as `vaviles`:
+On k8-control, as `<user>`:
 
 - `kubectl get nodes -o wide` shows three `Ready` nodes.
 - `kubectl get pods -A` shows everything `Running`.
@@ -372,7 +374,7 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 
 ## Validation and CI
 
-[`ci/validate.sh`](ci/validate.sh) checks the whole repo. Run it before every commit, as `vaviles`: `ci/validate.sh`, or `ci/validate.sh --offline` without internet access (after one online run, which fills its cache). It exits non-zero if any check fails. GitHub Actions runs it on every push and pull request, and every Monday, because its online checks (Cloudflare's ranges, the pinned upstream files) can start failing with no change in the repo ([`.github/workflows/validate.yml`](.github/workflows/validate.yml)).
+[`ci/validate.sh`](ci/validate.sh) checks the whole repo. Run it before every commit, as `<user>`: `ci/validate.sh`, or `ci/validate.sh --offline` without internet access (after one online run, which fills its cache). It exits non-zero if any check fails. GitHub Actions runs it on every push and pull request, and every Monday, because its online checks (Cloudflare's ranges, the pinned upstream files) can start failing with no change in the repo ([`.github/workflows/validate.yml`](.github/workflows/validate.yml)).
 
 | Area | What it checks |
 |------|----------------|
@@ -393,11 +395,11 @@ Repo conventions: [`.gitattributes`](.gitattributes) stores text files with LF l
 ## GitHub access
 
 This repo is pushed from k8-control to the private repo [`1apx-codebase/ubuntu`](https://github.com/1apx-codebase/ubuntu) over SSH.
-Run every command as `vaviles`, not root, so the key and repo stay owned by that user.
+Run every command as `<user>`, not root, so the key and repo stay owned by that user.
 
 | Item | Value |
 |------|-------|
-| Local repo | `/home/vaviles/codebase/github/ubuntu` |
+| Local repo | `/home/<user>/codebase/github/ubuntu` |
 | Remote | `origin` → `git@github.com:1apx-codebase/ubuntu.git` |
 | Branch | `main`, tracking `origin/main` |
 | SSH key | `~/.ssh/id_ed25519` (ed25519, no passphrase), added to the `1apx-codebase` GitHub account |
@@ -406,7 +408,7 @@ Run every command as `vaviles`, not root, so the key and repo stay owned by that
 
 ### One-time setup
 
-Script: [`setup-github.sh`](setup-github.sh). Run it as `vaviles` with `./setup-github.sh`, not with sudo.
+Script: [`setup-github.sh`](setup-github.sh). Run it as `<user>` with `./setup-github.sh`, not with sudo.
 
 The script:
 
@@ -430,7 +432,7 @@ On 2026-10-15, text couldn't be copied out of Claude Code (run as `sudo claude`)
 | Change | File | Used by |
 |--------|------|---------|
 | Add `"tui": "default"` | `/root/.claude/settings.json` | `sudo claude` |
-| Add `"tui": "default"` | `/home/vaviles/.claude/settings.json` | `claude` as `vaviles` |
+| Add `"tui": "default"` | `/home/<user>/.claude/settings.json` | `claude` as `<user>` |
 
 Both files now read:
 
@@ -441,19 +443,19 @@ Both files now read:
 }
 ```
 
-The originals are backed up at `/root/.claude/settings.json.bak-2026-10-15-015041` and `/home/vaviles/.claude/settings.json.bak-2026-10-15-015744`.
+The originals are backed up at `/root/.claude/settings.json.bak-2026-10-15-015041` and `/home/<user>/.claude/settings.json.bak-2026-10-15-015744`.
 
 Script: [`claude-classic-tui.sh`](claude-classic-tui.sh). Run it with `sudo ./claude-classic-tui.sh`, or `sudo ./claude-classic-tui.sh --revert` to go back to fullscreen. It changes both files, backs each one up first, and keeps each file's owner.
 
 Notes:
 
 - **Restart Claude Code after the change.** If the setting changes while a session is running, the screen can go blank. Press Ctrl+L to redraw, or exit and run `sudo claude` again, then use `/resume` to continue the conversation.
-- **Settings are per user.** `sudo claude` reads `/root/.claude/settings.json`, and `claude` as `vaviles` reads `/home/vaviles/.claude/settings.json`, so both need the setting. To cover another user, add them to `TARGETS` at the top of the script.
+- **Settings are per user.** `sudo claude` reads `/root/.claude/settings.json`, and `claude` as `<user>` reads `/home/<user>/.claude/settings.json`, so both need the setting. To cover another user, add them to `TARGETS` at the top of the script.
 - **Without this fix**, you can still copy in the fullscreen interface by holding a key while you drag: Shift in most Linux and Windows terminals and PuTTY, Option in iTerm2, Fn in macOS Terminal.app.
 
 ## Appendix B: ORDS on Kubernetes: security, operations and troubleshooting
 
-Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the `ords` namespace, so most commands need `-n ords`.
+Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `ords` namespace, so most commands need `-n ords`.
 
 ### B.1 Security practices applied
 
@@ -520,7 +522,7 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | ORDS is exposed to the internet through a router port forward | Chosen over a Cloudflare Tunnel. The source ranges limit it to Cloudflare. A tunnel (`cloudflared`) would need no open port at all |
 | ORDS doesn't verify that a connection really comes through your Cloudflare account | Anyone's Cloudflare-proxied site could point at your IP. Cloudflare's Authenticated Origin Pulls would close this, but need client-certificate checking in front of ORDS |
 | metrics-server doesn't verify kubelets' certificates | The usual kubeadm setting. Verifying them means approving kubelet certificates by hand every year |
-| `vaviles` and `k8sadmin` have passwordless sudo | Chosen for automation (see the top of this README) |
+| `<user>` and `k8sadmin` have passwordless sudo | Chosen for automation (see the top of this README) |
 | One control-plane node | See [Running the cluster](#running-the-cluster) |
 | Containers' root filesystems are writable (`readOnlyRootFilesystem` isn't set) | ORDS writes temporary files; a read-only root filesystem with writable `emptyDir` folders for them would need testing on the real image first |
 
