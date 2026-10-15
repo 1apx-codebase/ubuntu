@@ -132,7 +132,7 @@ def arrow(points, color, marker, dash=None):
 # ---------- layout ----------
 # 1000 px wide and portrait, with 14-19 px text: GitHub scales README images down to its
 # ~830-1000 px content column, so the text must still be readable after that.
-W, H = 1000, 1316
+W, H = 1000, 1390
 MARKERS = {"m-user": C["user"], "m-db": C["db"], "m-admin": C["admin"], "m-net": C["net"]}
 BODY, SMALL, LABEL = 15, 14, 14   # box text, secondary lines, arrow labels
 
@@ -141,7 +141,8 @@ out.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" vi
 out.append('  <title id="title">k8-1apx: Kubernetes cluster for Oracle ORDS</title>')
 out.append('  <desc id="desc">Three Ubuntu VMs on Proxmox: k8-control runs the control plane; '
            'k8-worker-1 and k8-worker-2 each run one ORDS pod in the ords namespace, behind a MetalLB '
-           'LoadBalancer IP 192.168.1.180, connected to the existing Oracle database node.1apx.com:1521.</desc>')
+           'LoadBalancer IP 192.168.1.180. Users reach https://www.1apx.com through Cloudflare and the '
+           'router port forward. ORDS connects to the existing Oracle database node.1apx.com:1521.</desc>')
 out.append("  <defs>")
 for mid, col in MARKERS.items():
     out.append(f'    <marker id="{mid}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
@@ -156,19 +157,22 @@ text(W / 2, 74, "Kubernetes 1.36.5 · kubeadm · containerd · Calico · MetalLB
 
 # Row 1: outside the Proxmox host
 ROW_Y, ROW_H = 98, 82
-admin = (30, ROW_Y, 300, ROW_H)
-router = (350, ROW_Y, 300, ROW_H)
-users = (670, ROW_Y, 300, ROW_H)
+admin = (30, ROW_Y, 260, ROW_H)
+users = (330, ROW_Y, 280, ROW_H)
+cflare = (690, ROW_Y, 280, ROW_H)
+router = (690, 214, 280, 72)
 labeled_box(*admin, ["Admin (vaviles)", "kubectl · SSH · git"], C["vm"], C["frame"], size=BODY, gap=24)
-labeled_box(*router, ["Router 192.168.1.1", "LAN gateway · DNS"], C["vm"], C["frame"], size=BODY, gap=24)
-labeled_box(*users, ["Users", "https://ords.1apx.com/apps/"], C["vm"], C["frame"], size=BODY, gap=24)
+labeled_box(*users, ["Users (internet and LAN)", "https://www.1apx.com/"], C["vm"], C["frame"], size=BODY, gap=24)
+labeled_box(*cflare, ["Cloudflare", "www.1apx.com · proxied", "SSL/TLS Full (strict)"], C["ext"], C["extline"],
+            size=BODY, gap=21)
+labeled_box(*router, ["Router 192.168.1.1", "port 443 → 192.168.1.180"], C["vm"], C["frame"], size=BODY, gap=24)
 
 # Proxmox host frame, with its label as a tag on the bottom edge
-FX, FY, FW = 20, 226, 960
+FX, FY, FW = 20, 300, 960
 INNER_X, INNER_W = 70, 860           # content inside the frame; gutters carry the arrows
 
 # k8-control: full width, components in a 3 x 2 grid
-ctl = (INNER_X, 256, INNER_W, 236)
+ctl = (INNER_X, 330, INNER_W, 236)
 rect(*ctl, C["vm"], C["frame"], r=10)
 text(W / 2, ctl[1] + 30, "k8-control", 19, bold=True, box=(ctl[0], ctl[0] + ctl[2]))
 text(W / 2, ctl[1] + 52, "192.168.1.170 · control plane · 8 vCPU, 7.2 GB", SMALL, color=C["muted"],
@@ -190,14 +194,14 @@ text(W / 2, ctl[1] + 218, "ufw: SSH and the Kubernetes API from the LAN only", S
      italic=True, box=(ctl[0], ctl[0] + ctl[2]))
 
 # Service (MetalLB), full width
-svc = (INNER_X, 522, INNER_W, 92)
+svc = (INNER_X, 596, INNER_W, 92)
 labeled_box(*svc, ["Service ords · LoadBalancer · 192.168.1.180",
-                   "MetalLB layer 2 · client-IP session affinity",
+                   "MetalLB layer 2 · admits only Cloudflare and the LAN",
                    ":443 → pods 8443 (HTTPS) · :80 → 8080 (redirects to HTTPS)"],
             C["pod"], C["podline"], size=BODY, gap=22)
 
 # Workers
-VY, VH = 644, 450
+VY, VH = 718, 450
 w1 = (INNER_X, VY, 420, VH)
 w2 = (INNER_X + 440, VY, 420, VH)
 NS = (85, VY + 74, 830, 214)
@@ -245,11 +249,18 @@ labeled_box(*inet, ["Internet (HTTPS 443)", "container-registry.oracle.com", "do
 # ---------- arrows ----------
 ax = admin[0] + admin[2] / 2
 arrow([(ax, ROW_Y + ROW_H), (ax, ctl[1])], C["admin"], "m-admin")
-text(ax + 10, 208, "kubectl :6443 · SSH", LABEL, bold=True, color=C["admin"], anchor="start", box=(ax, ax + 200))
-# Users: down the right gutter, into the Service's right side
+text(ax + 10, FY - 18, "kubectl :6443 · SSH", LABEL, bold=True, color=C["admin"], anchor="start", box=(ax, ax + 200))
+# Users to Cloudflare, Cloudflare to the router's public IP, then the router's port forward
+# down the right gutter into the Service's right side
+uy = ROW_Y + ROW_H / 2
+arrow([(users[0] + users[2], uy), (cflare[0], uy)], C["user"], "m-user")
+text((users[0] + users[2] + cflare[0]) / 2, uy - 13, "HTTPS", LABEL, bold=True, color=C["user"],
+     box=(users[0] + users[2], cflare[0]))
+cx_mid = cflare[0] + cflare[2] / 2
+arrow([(cx_mid, ROW_Y + ROW_H), (cx_mid, router[1])], C["user"], "m-user")
 gx_r = (INNER_X + INNER_W + FX + FW) / 2
-arrow([(gx_r, ROW_Y + ROW_H), (gx_r, svc[1] + svc[3] / 2), (svc[0] + svc[2], svc[1] + svc[3] / 2)], C["user"], "m-user")
-text(gx_r - 10, 208, "HTTPS", LABEL, bold=True, color=C["user"], anchor="end", box=(gx_r - 90, gx_r))
+arrow([(gx_r, router[1] + router[3]), (gx_r, svc[1] + svc[3] / 2), (svc[0] + svc[2], svc[1] + svc[3] / 2)],
+      C["user"], "m-user")
 # Service to each ORDS pod, on the workers' outer sides, clear of the centered titles
 for cx in (w1[0] + 48, w2[0] + w2[2] - 48):
     arrow([(cx, svc[1] + svc[3]), (cx, POD_Y)], C["user"], "m-user")

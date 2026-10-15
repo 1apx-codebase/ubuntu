@@ -106,7 +106,7 @@ Every node uses the same DNS servers as k8-control: **`192.168.1.1`** (the route
 
 `node-prep.sh` warns if a node is missing either server. Kubernetes uses them too: kubeadm points kubelet at `/run/systemd/resolve/resolv.conf`, which lists the real servers rather than the local `127.0.0.53` stub. Pods resolve outside names through CoreDNS, which forwards to those servers.
 
-**Caveat with two DNS servers.** Ubuntu's resolver asks one server and only switches when it fails. `8.8.8.8` only knows the public `1apx.com` zone on Cloudflare. So a record that exists only on the router, such as `ords.1apx.com`, can stop resolving whenever the node has switched to `8.8.8.8`. To avoid this, either put the records in Cloudflare (they would be public, though the addresses are private), or remove `8.8.8.8` from the nodes. The node names don't depend on DNS, because the scripts write them to `/etc/hosts`. The database name doesn't either if you set `DB_HOST_IP`.
+**Caveat with two DNS servers.** Ubuntu's resolver asks one server and only switches when it fails. `8.8.8.8` only knows the public `1apx.com` zone on Cloudflare. So a record that exists only on the router, such as `node.1apx.com` for the database, can stop resolving whenever the node has switched to `8.8.8.8`. To avoid this, set `DB_HOST_IP` in `deploy-ords.sh`, or remove `8.8.8.8` from the nodes. The node names don't depend on DNS, because the scripts write them to `/etc/hosts`. The name users open, `www.1apx.com`, is a public Cloudflare record, so it resolves the same from either server (see [Public access through Cloudflare](#public-access-through-cloudflare)).
 
 ### Kernel settings
 
@@ -148,16 +148,51 @@ Things to know:
 - **Use the console when enabling it.** SSH from the LAN is allowed before ufw is turned on, but if anything goes wrong, use the Proxmox console.
 - **When troubleshooting:** if pods can't reach each other or a service, run `sudo ufw disable` on the nodes for a moment. If that fixes it, a rule is missing. Check with `sudo ufw status numbered`.
 
+### Public access through Cloudflare
+
+Users open **`https://www.1apx.com/`**, from the internet or the LAN. Their traffic goes through Cloudflare to your public IP, and the router forwards it to ORDS:
+
+| Hop | What happens |
+|-----|--------------|
+| Browser → Cloudflare | `www.1apx.com` is a proxied Cloudflare record, so users connect to Cloudflare, which applies its DDoS and bot protection |
+| Cloudflare → router | Cloudflare connects to your public IP on port 443, over HTTPS, checking the `*.1apx.com` certificate |
+| Router → cluster | The router forwards port 443 to `192.168.1.180`, ORDS's MetalLB address |
+| Cluster → ORDS | The Service accepts connections only from Cloudflare's addresses and the LAN, and passes them to one of the two ORDS pods |
+
+Settings outside this repo:
+
+| Where | Setting |
+|-------|---------|
+| Router | Forward TCP port **443** from the internet to **`192.168.1.180:443`**. Port 80 isn't needed, because Cloudflare redirects `http://` to `https://` |
+| Cloudflare, DNS | `www.1apx.com`: an `A` record to your public IP, **Proxied** (orange cloud). Change it only at cutover (below) |
+| Cloudflare, SSL/TLS | Encryption mode **Full (strict)**. With "Flexible", Cloudflare talks plain HTTP to ORDS, ORDS redirects it to HTTPS, and browsers loop forever. With "Full" (not strict), Cloudflare doesn't check the certificate |
+| Cloudflare, SSL/TLS → Edge Certificates | **Always Use HTTPS** on |
+
+Things to know:
+
+- **Only Cloudflare can reach ORDS from the internet.** The Service lists Cloudflare's IPv4 ranges in `loadBalancerSourceRanges` (plus the LAN, for testing), so anyone who finds your public IP and connects directly is refused. Cloudflare publishes the ranges at <https://www.cloudflare.com/ips-v4>; `ci/validate.sh` fails if they change, and then you update `ords.yaml` and run `deploy-ords.sh`.
+- **A changing public IP** breaks the Cloudflare record. If your ISP doesn't give you a fixed IP, keep the record current with a dynamic DNS updater for Cloudflare (many routers have one built in).
+- **Client addresses.** ORDS and APEX see Cloudflare's addresses, not users'. Cloudflare passes the real address in the `CF-Connecting-IP` header.
+- **Bot protection.** Today, `www.1apx.com` answers non-browser clients with Cloudflare's "Just a moment..." challenge. Browsers pass it, but scripts and other systems calling ORDS's REST APIs won't. If you have such clients, add a Cloudflare WAF rule that skips the challenge for their paths or addresses.
+
+**Cutover.** `www.1apx.com` already points somewhere today, hidden behind Cloudflare. Note its current target in Cloudflare's DNS page, so you can switch back. Then:
+
+1. Build the cluster and pass [Step 8](#step-8-check-the-cluster), which tests ORDS directly from the LAN.
+2. Add the router's port forward.
+3. Add a test record, such as `test.1apx.com` → your public IP, Proxied, and open `https://test.1apx.com/apps/`. The certificate covers it, and the test exercises the whole path: Cloudflare, the router, the source ranges and ORDS.
+4. Point `www.1apx.com` at your public IP (Proxied), and delete the test record. To roll back, point `www` back at its old target.
+
 ### Before you start
 
 - **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 7). The workers must be able to reach port 1521 on the database server.
 - **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 7 checks both and tells you if anything needs changing.
 - **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.pem`, `*.p12`, `*.jks` and `*.pfx` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool. All of them answered no ping when this was written.
-- **DNS records.** None of the cluster names resolve today: `1apx.com` is on Cloudflare, but `k8-control`, the workers, `node.1apx.com` and `ords.1apx.com` have no records. You need:
-  - `ords.1apx.com` → `192.168.1.180`, the name users and browsers will use for ORDS (see the caveat under [DNS](#dns)).
+- **DNS records.** `1apx.com` is on Cloudflare, but `k8-control`, the workers and `node.1apx.com` have no records. You need:
   - `node.1apx.com` → the database server's IP. Or set `DB_HOST_IP` in `deploy-ords.sh`, which maps the name for the ORDS pods only.
   - Optionally, the three nodes. The scripts add them to `/etc/hosts` on every node anyway.
+
+  The name users open, `www.1apx.com`, is already a public Cloudflare record. It moves to the cluster at cutover (see [Public access through Cloudflare](#public-access-through-cloudflare)).
 - **Proxmox details.** Check the VM storage name with `pvesm status` and the LAN bridge with `ip -br link` on the Proxmox host. The script assumes `local-lvm` and `vmbr0`, and needs Proxmox VE 7.2 or later.
 - **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `vaviles@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
 
@@ -250,7 +285,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 **What the script does:**
 
 0. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's ports 8443 and 8080, and can only reach DNS, the database port (1521) and HTTPS (443, for the APEX images download). Everything else is blocked.
-1. **Certificate.** Checks that it covers `ords.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret. The conversion matters: tested with this ORDS image, a PKCS#1 key (`BEGIN RSA PRIVATE KEY`, like `ssl/1apx.pem`) stops ORDS from starting.
+1. **Certificate.** Checks that it covers `www.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret. The conversion matters: tested with this ORDS image, a PKCS#1 key (`BEGIN RSA PRIVATE KEY`, like `ssl/1apx.pem`) stops ORDS from starting.
 2. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
 3. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB). If the pod hasn't finished after 10 minutes (usually because the image can't be downloaded), the script shows the pod's events and stops.
 4. **APEX images.** Uses the database's APEX version, unless you set `APEX_VERSION`, and checks that Oracle publishes `apex_<version>.zip` for it. Each worker downloads the images once (about 300 MB) into `/var/cache/ords-apex`, and pods on that worker reuse them. The workers need HTTPS access to `download.oracle.com`.
@@ -262,13 +297,14 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
    - **Java heap** set to 75% of the 3 GiB memory limit. The `ords` launcher sets none, and Java's default would be a quarter.
    - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, and memory limits (3 GiB for ORDS). The APEX images cache, `/var/cache/ords-apex` on each worker, is created by `node-prep.sh` and owned by that user.
    - **Rolling updates without dropped requests:** a stopping pod keeps serving for 10 seconds while the Service and MetalLB stop sending it new connections.
-   - **Health checks** connect over HTTPS and send `Host: ords.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
-   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://ords.1apx.com/...`. It has client-IP session affinity, so each user stays on one pod. APEX keeps its session state in the database, so either pod could serve any request; affinity keeps a user on a pod with warm caches, and puts a user's whole session in one pod's log. It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
+   - **Health checks** connect over HTTPS and send `Host: www.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
+   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://www.1apx.com/...`. It accepts connections only from Cloudflare's addresses and the LAN (see [Public access through Cloudflare](#public-access-through-cloudflare)). It has client-IP session affinity; behind Cloudflare that address is a Cloudflare server, so it only tends to keep a user on one pod. That's fine, because APEX keeps its session state in the database, so either pod can serve any request. It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
+   - **Root redirect:** `https://www.1apx.com/` (no path) shows a small page in each pod that sends the browser on to `/apps/`.
    - **Image pinned by digest** (`ORDS_IMAGE` is `...:26.2.3@sha256:...`), so the image can't change even if Oracle re-publishes the tag.
 
 **Rehearsed on k8-control (2026-10-15):** the pod's config script was run with `ords-settings.conf` and the real certificate, then ORDS 26.2.3 was started from it. ORDS served the full Sectigo chain, which verified cleanly against the public CAs. HTTP redirected to HTTPS, and the health checks behaved as described. The database login itself hasn't been tested, because `node.1apx.com` doesn't resolve from here.
 
-ORDS is then at **`https://ords.1apx.com/apps/`**, with APEX at `https://ords.1apx.com/apps/r/...` (or `/apps/f?p=...`), the same paths as on the old server.
+After cutover, users open **`https://www.1apx.com/`**, which leads to `https://www.1apx.com/apps/`. APEX is at `https://www.1apx.com/apps/r/...` (or `/apps/f?p=...`), the same paths as on the old server. At the end, `deploy-ords.sh` tests `/` and `/apps/` directly at `192.168.1.180`, bypassing Cloudflare and DNS.
 
 To change a setting, edit `ords-settings.conf` and run the script again. It replaces the pods one at a time, but only when the settings, certificate, password or database details have changed: a hash of them is stored on the pods, so running the script again with nothing changed restarts nothing.
 
@@ -280,7 +316,8 @@ On k8-control, as `vaviles`:
 - `kubectl get pods -A` shows everything `Running`.
 - `kubectl get pods -n ords -o wide` shows one ORDS pod on each worker, both `1/1 Ready`. If both are on one worker (after that worker was down, for example), run `kubectl rollout restart deployment/ords -n ords` to spread them again. A pod stays `0/1` while it can't reach the database.
 - `kubectl logs -n ords deploy/ords` shows "HTTPS listening on host: 0.0.0.0 port: 8443" and no pool errors.
-- `curl -sI https://ords.1apx.com/apps/` returns a `302` to the APEX start page. Running `curl -vI` also shows the `*.1apx.com` certificate.
+- `curl -sI --resolve www.1apx.com:443:192.168.1.180 https://www.1apx.com/apps/` returns a `302` to the APEX start page, straight from the cluster (before cutover, DNS still points `www` elsewhere). The same for `/` returns `200`, the redirect page. Running `curl -vI` also shows the `*.1apx.com` certificate.
+- After cutover, `curl -sI https://www.1apx.com/apps/` from outside the LAN shows `server: cloudflare` and the same `302`.
 - `kubectl top nodes` shows CPU and memory for each node.
 - Secrets are encrypted in etcd: `sudo crictl exec $(sudo crictl ps --name '^etcd$' -q) etcdctl --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key get /registry/secrets/ords/ords-tls | head -c 80 | od -c | head -3` shows `k8s:enc:secretbox:v1:key1`, not the certificate.
 - `sudo tail -1 /var/log/kubernetes/audit/audit.log` shows a recent API request.
@@ -417,6 +454,8 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | Its own namespace, `ords`, so its network policy, Secrets and permissions apply to ORDS alone | `namespace.yaml` |
 | A NetworkPolicy blocks everything not listed. In: only ORDS's ports 8443 and 8080. Out: only DNS (CoreDNS), the database port and HTTPS | `network-policy.yaml` |
 | The Service allocates no NodePorts; ORDS is reachable only on its MetalLB address, `192.168.1.180` | `ords.yaml` |
+| From the internet, ORDS is reachable only through Cloudflare: the Service admits only Cloudflare's address ranges and the LAN (`loadBalancerSourceRanges`), so Cloudflare's DDoS and bot protection can't be bypassed. `ci/validate.sh` checks the ranges against Cloudflare's published list | `ords.yaml`, `ci/validate.sh` |
+| HTTPS all the way: browsers to Cloudflare, and Cloudflare to ORDS with the certificate checked (SSL mode Full (strict)) | Cloudflare (see [Public access](#public-access-through-cloudflare)) |
 | HTTPS only: HTTP answers with a redirect to HTTPS (`security.forceHTTPS`), with the full certificate chain served | `ords-settings.conf`, `deploy-ords.sh` |
 
 **ORDS pods**
@@ -447,6 +486,8 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | **Traffic to the database isn't encrypted** unless the database requires it. ORDS connects to `node.1apx.com:1521` over plain TCP | Turn on Oracle Native Network Encryption on the database server (`SQLNET.ENCRYPTION_SERVER = required` in its `sqlnet.ora`), or use a TCPS listener. ORDS needs no change for the first |
 | No Pod Security level is enforced on the namespace | The APEX images cache is a host folder (`hostPath`), which both enforceable levels forbid. The pods otherwise meet the strictest level, `restricted` |
 | HTTPS out of the namespace is allowed to any address | Needed for the APEX images download from `download.oracle.com`, whose addresses change |
+| ORDS is exposed to the internet through a router port forward | Chosen over a Cloudflare Tunnel. The source ranges limit it to Cloudflare. A tunnel (`cloudflared`) would need no open port at all |
+| ORDS doesn't verify that a connection really comes through your Cloudflare account | Anyone's Cloudflare-proxied site could point at your IP. Cloudflare's Authenticated Origin Pulls would close this, but need client-certificate checking in front of ORDS |
 | metrics-server doesn't verify kubelets' certificates | The usual kubeadm setting. Verifying them means approving kubelet certificates by hand every year |
 | `vaviles` and `k8sadmin` have passwordless sudo | Chosen for automation (see the top of this README) |
 | One control-plane node | See [Running the cluster](#running-the-cluster) |
@@ -461,7 +502,9 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | Service and its LAN IP | `kubectl get svc -n ords` |
 | CPU and memory use | `kubectl top pods -n ords` |
 | Recent events (scheduling, probes, restarts) | `kubectl get events -n ords --sort-by=.lastTimestamp` |
-| From a client | `curl -sI https://ords.1apx.com/apps/` returns `302` |
+| Directly, from the LAN | `curl -sI --resolve www.1apx.com:443:192.168.1.180 https://www.1apx.com/apps/` returns `302` |
+| Through Cloudflare | `curl -sI https://www.1apx.com/apps/` returns `302` (`403` with `cf-mitigated: challenge` means Cloudflare's bot check stopped curl; a browser passes it) |
+| Cloudflare's address ranges changed | `ci/validate.sh` says so. Update `loadBalancerSourceRanges` in `ords.yaml` from <https://www.cloudflare.com/ips-v4>, commit, and run `deploy-ords.sh` |
 
 **Logs**
 
@@ -530,11 +573,15 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 | Symptom | Check and fix |
 |---------|---------------|
 | `kubectl get svc -n ords` shows `EXTERNAL-IP <pending>` | MetalLB hasn't assigned the IP: `kubectl get ipaddresspools -n metallb-system` and `kubectl describe svc ords -n ords`. The address must be inside the pool, and nothing else on the LAN may use it |
-| The name doesn't resolve or goes elsewhere | `getent hosts ords.1apx.com` should show `192.168.1.180`. Test without DNS: `curl -sI --resolve ords.1apx.com:443:192.168.1.180 https://ords.1apx.com/apps/` |
+| Works directly but not through Cloudflare | Test the cluster without Cloudflare: `curl -sI --resolve www.1apx.com:443:192.168.1.180 https://www.1apx.com/apps/`. If that works, the problem is the router or Cloudflare (next rows) |
+| Cloudflare error 521 or 522 ("Web server is down", "Connection timed out") | Cloudflare can't reach your public IP on 443: check the router's port forward, that the Cloudflare record has your current public IP, and that Cloudflare's ranges in `ords.yaml` are current |
+| Cloudflare error 525 or 526 (SSL handshake failed, invalid certificate) | Cloudflare doesn't accept ORDS's certificate: it expired, or the chain is incomplete. Check it as in the next row |
+| Browser loops between `http://` and `https://` ("too many redirects") | Cloudflare's SSL/TLS mode is "Flexible". Set it to **Full (strict)** |
+| Scripts or REST clients get `403` with a "Just a moment..." page | Cloudflare's bot challenge. Add a WAF rule that skips it for those clients |
 | No answer from `192.168.1.180` at all | MetalLB's speaker answers ARP for it: `kubectl get pods -n metallb-system -o wide` should show a running speaker on each worker. `ip neigh show 192.168.1.180` on a LAN machine shows which MAC answered |
-| Certificate warning in the browser | Check what's served: `openssl s_client -connect 192.168.1.180:443 -servername ords.1apx.com -showcerts </dev/null`. Expect `*.1apx.com` and the full chain |
+| Certificate warning in the browser | Check what's served: `openssl s_client -connect 192.168.1.180:443 -servername www.1apx.com -showcerts </dev/null`. Expect `*.1apx.com` and the full chain |
 | `/i/` images missing (APEX pages unstyled) | `kubectl get configmap ords-db -n ords -o yaml` should show `APEX_VERSION`, and `ls /var/cache/ords-apex/` on the worker should list it with a `.complete` file. If `APEX_VERSION` is empty, set it in `deploy-ords.sh` and redeploy |
-| APEX logs users out, or shows "session expired" | APEX keeps sessions in the database, so switching pods doesn't end them. Its session cookie is tied to the host name and HTTPS, so check users open `https://ords.1apx.com/...`, not the IP address or `http://`. Then check both pods are `1/1 Ready`: a pod restarting mid-request can fail a page, not a session |
+| APEX logs users out, or shows "session expired" | APEX keeps sessions in the database, so switching pods doesn't end them. Its session cookie is tied to the host name and HTTPS, so check users open `https://www.1apx.com/...`, not the IP address or `http://`. Then check both pods are `1/1 Ready`: a pod restarting mid-request can fail a page, not a session |
 
 **Suspect the network policy?** Remove it for a moment: `kubectl delete networkpolicy ords -n ords`, and test again. If that fixes it, a connection ORDS needs isn't in `network-policy.yaml`: add it there, commit, and run `deploy-ords.sh`, which also restores the policy. If it doesn't help, run `deploy-ords.sh` anyway to put the policy back.
 
@@ -544,4 +591,4 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 
 **A worker is `NotReady`.** On the worker: `sudo systemctl status kubelet containerd` and `sudo journalctl -u kubelet -n 50`. If the log says it can't reach `k8-control.1apx.com`, check that `/etc/hosts` still has the `# BEGIN k8s-cluster` block, and re-run `join-workers.sh` if not.
 
-**Look inside a pod.** `kubectl exec -it -n ords deploy/ords -- bash` opens a shell as the `oracle` user. From there, `ords --config /etc/ords/config config list` shows the active settings, and `curl -sk -H 'Host: ords.1apx.com' https://localhost:8443/apps/_/landing -o /dev/null -w '%{http_code}\n'` runs the same check as the readiness probe.
+**Look inside a pod.** `kubectl exec -it -n ords deploy/ords -- bash` opens a shell as the `oracle` user. From there, `ords --config /etc/ords/config config list` shows the active settings, and `curl -sk -H 'Host: www.1apx.com' https://localhost:8443/apps/_/landing -o /dev/null -w '%{http_code}\n'` runs the same check as the readiness probe.

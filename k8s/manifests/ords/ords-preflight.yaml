@@ -1,6 +1,6 @@
 # One-off pod run by deploy-ords.sh before deploying ORDS. It logs in to the database
 # as ORDS_PUBLIC_USER (which proves the network path and the password) and reports
-# the ORDS schema and APEX versions installed there. Replaces __ORDS_IMAGE__.
+# the ORDS schema and APEX versions installed there. deploy-ords.sh fills in the image.
 apiVersion: v1
 kind: Pod
 metadata:

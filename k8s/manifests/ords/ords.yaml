@@ -1,6 +1,6 @@
 # ORDS: two stateless replicas, normally one per worker, behind a MetalLB LAN IP, serving HTTPS
-# with the *.1apx.com certificate. Applied by deploy-ords.sh, which replaces
-# __ORDS_IMAGE__, __ORDS_HOSTNAME__, __LB_IP__ and __CONFIG_HASH__.
+# with the *.1apx.com certificate. Applied by deploy-ords.sh, which fills in the image,
+# host name, LoadBalancer IP and config hash (the double-underscore placeholders).
 #
 # Each pod builds its own ORDS config in an emptyDir at start, from:
 #   ords-db ConfigMap        database host/port/service and APEX version
@@ -36,7 +36,7 @@ spec:
         app.kubernetes.io/part-of: ords
       annotations:
         # Hash of the ConfigMaps and Secrets below: a change replaces the pods
-        ords.1apx.com/config-hash: "__CONFIG_HASH__"
+        1apx.com/config-hash: "__CONFIG_HASH__"
     spec:
       hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
       automountServiceAccountToken: false   # ORDS doesn't use the Kubernetes API
@@ -119,6 +119,13 @@ spec:
               if [ -n "${APEX_VERSION:-}" ]; then
                 $c set standalone.static.path "/opt/oracle/apex-cache/$APEX_VERSION"
               fi
+              # https://<host>/ (no path) sends users on to APEX at /apps/
+              docroot=/etc/ords/config/global/doc_root
+              mkdir -p "$docroot"
+              printf '%s\n' '<!DOCTYPE html>' '<html><head><meta charset="utf-8">' \
+                '<meta http-equiv="refresh" content="0; url=/apps/"><title>Redirecting</title></head>' \
+                '<body><a href="/apps/">Continue to the application</a></body></html>' > "$docroot/index.html"
+              $c set standalone.doc.root "$docroot"
               pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
               printf '%s\n%s\n' "$pw" "$pw" | $c secret db.password
           envFrom:
@@ -263,11 +270,34 @@ spec:
   type: LoadBalancer
   # MetalLB answers on the LAN IP directly, so no NodePorts need to be opened
   allocateLoadBalancerNodePorts: false
+  # Who may connect to the LoadBalancer IP (enforced by kube-proxy): Cloudflare, which proxies
+  # www.1apx.com from the internet through the router's port forward, and the LAN, for
+  # testing. Anyone else who finds the public IP is refused, so Cloudflare can't be
+  # bypassed. Cloudflare's list: https://www.cloudflare.com/ips-v4 (ci/validate.sh
+  # checks this copy against it).
+  loadBalancerSourceRanges:
+    - 192.168.1.0/24         # LAN
+    - 173.245.48.0/20        # Cloudflare, from here on
+    - 103.21.244.0/22
+    - 103.22.200.0/22
+    - 103.31.4.0/22
+    - 141.101.64.0/18
+    - 108.162.192.0/18
+    - 190.93.240.0/20
+    - 188.114.96.0/20
+    - 197.234.240.0/22
+    - 198.41.128.0/17
+    - 162.158.0.0/15
+    - 104.16.0.0/13
+    - 104.24.0.0/14
+    - 172.64.0.0/13
+    - 131.0.72.0/22
   selector:
     app: ords
   # APEX keeps session state in the database, so either pod can serve any request.
-  # Affinity keeps each client on one pod anyway: its requests share that pod's warm
-  # caches, and one pod's log shows a user's whole session when troubleshooting.
+  # Affinity is by connecting address, which for internet users is a Cloudflare edge
+  # server: it still tends to keep a user on one pod with warm caches, and nothing
+  # breaks when it changes.
   sessionAffinity: ClientIP
   ports:
     - name: https

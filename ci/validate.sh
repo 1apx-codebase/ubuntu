@@ -176,6 +176,15 @@ if [ "$ONLINE" = true ]; then
     > "$work/calico-installation.yaml"
   check "Calico Installation with our pod CIDR" "$KUBECONFORM" -strict -kubernetes-version "$K8S_VERSION" \
     -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
+  # The ORDS Service admits Cloudflare's current IPv4 ranges (plus the LAN), no more, no less
+  cf_live=$(curl -fsSL https://www.cloudflare.com/ips-v4 | grep -oE '^[0-9.]+/[0-9]+' | sort)
+  cf_repo=$(sed -n '/loadBalancerSourceRanges:/,/^  [a-zA-Z]/p' "$K8S/manifests/ords/ords.yaml" \
+    | grep -oE '[0-9]+\.[0-9.]+/[0-9]+' | grep -v '^192\.168\.1\.0/24$' | sort)
+  if [ -n "$cf_live" ] && [ "$cf_live" = "$cf_repo" ]; then
+    pass "ORDS Service allows exactly Cloudflare's current IPv4 ranges"
+  else
+    fail "Cloudflare's IPv4 ranges changed: update loadBalancerSourceRanges in ords.yaml from https://www.cloudflare.com/ips-v4"
+  fi
 fi
 
 echo "== Documentation"

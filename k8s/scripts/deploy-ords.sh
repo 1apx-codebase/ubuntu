@@ -13,7 +13,8 @@ NAMESPACE=ords
 # Tags: container-registry.oracle.com/database/ords. For a new tag's digest, see the
 # tag on that page, or pull it on a worker and run: sudo crictl images --digests
 ORDS_IMAGE=container-registry.oracle.com/database/ords:26.2.3@sha256:9730c42b015624aec8b677c3bd530fe56443b1fa8efa87b7ab09d6e80e9e5daa
-ORDS_HOSTNAME=ords.1apx.com       # needs a DNS record pointing at LB_IP
+ORDS_HOSTNAME=www.1apx.com        # public name: Cloudflare proxies it to the router, which
+                                  # forwards port 443 to LB_IP (see README, Public access)
 LB_IP=192.168.1.180               # in the MetalLB pool, manifests/addons/metallb-pool.yaml
 
 # Existing Oracle database (from the old server's pool.xml)
@@ -220,7 +221,14 @@ render "$MANIFESTS/ords.yaml" | kubectl apply -f -
 kubectl rollout status deployment/ords -n "$NAMESPACE" --timeout=20m
 kubectl get pods,svc -n "$NAMESPACE" -o wide
 
-resolved=$(getent hosts "$ORDS_HOSTNAME" | awk '{print $1}' | head -1 || true)
-[ "$resolved" = "$LB_IP" ] \
-  || echo "NOTE: $ORDS_HOSTNAME resolves to '${resolved:-nothing}'. Add a DNS record: $ORDS_HOSTNAME -> $LB_IP"
-echo "ORDS is at https://$ORDS_HOSTNAME/apps/ (http:// redirects to https://)"
+# 8. Test ORDS directly at LB_IP, bypassing Cloudflare and DNS (the public name resolves to
+#    Cloudflare). This machine is on the LAN, which the Service allows.
+direct() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$ORDS_HOSTNAME:443:$LB_IP" "https://$ORDS_HOSTNAME$1" || true; }
+apps=$(direct /apps/)
+root=$(direct /)
+if [[ $apps =~ ^(200|302)$ ]] && [ "$root" = 200 ]; then
+  echo "Direct test OK: /apps/ answers $apps, / answers $root (a page that redirects to /apps/)."
+else
+  echo "WARNING: direct test: /apps/ answered '$apps' (expected 302 or 200), / answered '$root' (expected 200)." >&2
+fi
+echo "Users reach https://$ORDS_HOSTNAME/ through Cloudflare; / redirects to /apps/."

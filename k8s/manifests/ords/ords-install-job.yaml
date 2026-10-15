@@ -1,6 +1,6 @@
 # One-time job that installs (or upgrades) the ORDS schema in the Oracle database.
 # It's the only thing that uses the SYS password. Applied by deploy-ords.sh,
-# which replaces __ORDS_IMAGE__.
+# which fills in the image.
 apiVersion: batch/v1
 kind: Job
 metadata:
