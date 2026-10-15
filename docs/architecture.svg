@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="916" viewBox="0 0 1200 916" font-family="Helvetica Neue, Helvetica, Arial, Liberation Sans, Arimo, sans-serif" fill="#1f2937" role="img" aria-labelledby="title desc">
+  <title id="title">k8-1apx: Kubernetes cluster for Oracle ORDS</title>
+  <desc id="desc">Three Ubuntu VMs on Proxmox: k8-control runs the control plane; k8-worker-1 and k8-worker-2 each run one ORDS pod in the ords namespace, behind a MetalLB LoadBalancer IP 192.168.1.180, connected to the existing Oracle database node.1apx.com:1521.</desc>
+  <defs>
+    <marker id="m-user" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+    <marker id="m-user-start" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+    <marker id="m-db" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+    <marker id="m-db-start" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+    <marker id="m-admin" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="m-admin-start" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="m-net" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="m-net-start" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="1199" height="915" rx="12" fill="#ffffff" stroke="#d1d5db" stroke-width="1"/>
+  <text x="600.0" y="40" font-size="22" text-anchor="middle" font-weight="bold">k8-1apx: Kubernetes cluster for Oracle ORDS</text>
+  <text x="600.0" y="62" font-size="13" text-anchor="middle" fill="#4b5563">Kubernetes 1.36.5 · kubeadm · containerd · Calico · MetalLB · Ubuntu 26.04 VMs on Proxmox</text>
+  <rect x="40" y="84" width="250" height="72" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="165.0" y="115.8" font-size="15" text-anchor="middle" font-weight="bold">Admin (vaviles)</text>
+  <text x="165.0" y="134.8" font-size="13" text-anchor="middle" fill="#4b5563">kubectl · SSH · git</text>
+  <rect x="330" y="84" width="250" height="72" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="455.0" y="115.8" font-size="15" text-anchor="middle" font-weight="bold">Users</text>
+  <text x="455.0" y="134.8" font-size="13" text-anchor="middle" fill="#4b5563">https://ords.1apx.com/apps/</text>
+  <rect x="620" y="84" width="230" height="72" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="735.0" y="115.8" font-size="15" text-anchor="middle" font-weight="bold">Router 192.168.1.1</text>
+  <text x="735.0" y="134.8" font-size="13" text-anchor="middle" fill="#4b5563">LAN gateway · DNS</text>
+  <rect x="890" y="84" width="270" height="72" rx="8" fill="#fefce8" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="1025.0" y="108.2" font-size="15" text-anchor="middle" font-weight="bold">Internet</text>
+  <text x="1025.0" y="125.2" font-size="13" text-anchor="middle" fill="#4b5563">container-registry.oracle.com</text>
+  <text x="1025.0" y="142.2" font-size="13" text-anchor="middle" fill="#4b5563">download.oracle.com</text>
+  <rect x="30" y="196" width="1140" height="548" rx="12" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <rect x="44.0" y="732" width="351.9" height="24" rx="12" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+  <text x="220" y="748.5" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#64748b">Proxmox VE host · LAN 192.168.1.0/24 (bridge vmbr0)</text>
+  <rect x="55" y="300" width="330" height="428" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="420" y="300" width="345" height="428" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="800" y="300" width="345" height="428" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="220.0" y="326" font-size="16" text-anchor="middle" font-weight="bold">k8-control</text>
+  <text x="220.0" y="346" font-size="12" text-anchor="middle" fill="#4b5563">192.168.1.170 · control plane · 8 vCPU, 7.2 GB</text>
+  <rect x="75" y="362" width="290" height="52" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="220.0" y="383.9" font-size="12.5" text-anchor="middle" fill="#4b5563">kube-apiserver :6443</text>
+  <text x="220.0" y="400.9" font-size="12.5" text-anchor="middle" fill="#4b5563">Secrets encrypted · audit log</text>
+  <rect x="75" y="424" width="290" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="220.0" y="445.4" font-size="12.5" text-anchor="middle" fill="#4b5563">etcd (firewalled: k8-control only)</text>
+  <rect x="75" y="468" width="290" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="220.0" y="489.4" font-size="12.5" text-anchor="middle" fill="#4b5563">scheduler · controller-manager</text>
+  <rect x="75" y="512" width="290" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="220.0" y="533.4" font-size="12.5" text-anchor="middle" fill="#4b5563">CoreDNS · Calico · kube-proxy</text>
+  <rect x="75" y="556" width="290" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="220.0" y="577.4" font-size="12.5" text-anchor="middle" fill="#4b5563">kubelet · containerd</text>
+  <rect x="75" y="600" width="290" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="220.0" y="621.4" font-size="12.5" text-anchor="middle" fill="#4b5563">etcd backups (daily, 14 days)</text>
+  <text x="220.0" y="668" font-size="12.5" text-anchor="middle" font-style="italic" fill="#4b5563">Tainted: runs no workloads</text>
+  <text x="220.0" y="690" font-size="12.5" text-anchor="middle" font-style="italic" fill="#4b5563">ufw: SSH and API from the LAN only</text>
+  <text x="592.5" y="326" font-size="16" text-anchor="middle" font-weight="bold">k8-worker-1</text>
+  <text x="592.5" y="346" font-size="12" text-anchor="middle" fill="#4b5563">192.168.1.171 · worker · 4 vCPU, 8 GB</text>
+  <text x="972.5" y="326" font-size="16" text-anchor="middle" font-weight="bold">k8-worker-2</text>
+  <text x="972.5" y="346" font-size="12" text-anchor="middle" fill="#4b5563">192.168.1.172 · worker · 4 vCPU, 8 GB</text>
+  <rect x="435" y="362" width="695" height="206" rx="10" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <rect x="450" y="400" width="285" height="152" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="592.5" y="437.2" font-size="15" text-anchor="middle" font-weight="bold">ORDS pod</text>
+  <text x="592.5" y="459.2" font-size="13" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
+  <text x="592.5" y="481.2" font-size="13" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
+  <text x="592.5" y="503.2" font-size="13" text-anchor="middle" fill="#4b5563">ords serve · HTTPS 8443 · HTTP 8080</text>
+  <text x="592.5" y="525.2" font-size="13" text-anchor="middle" fill="#4b5563">UID 54321 · no capabilities</text>
+  <rect x="830" y="400" width="285" height="152" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="972.5" y="437.2" font-size="15" text-anchor="middle" font-weight="bold">ORDS pod</text>
+  <text x="972.5" y="459.2" font-size="13" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
+  <text x="972.5" y="481.2" font-size="13" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
+  <text x="972.5" y="503.2" font-size="13" text-anchor="middle" fill="#4b5563">ords serve · HTTPS 8443 · HTTP 8080</text>
+  <text x="972.5" y="525.2" font-size="13" text-anchor="middle" fill="#4b5563">UID 54321 · no capabilities</text>
+  <rect x="671.8" y="350" width="221.3" height="24" rx="12" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="782.5" y="366.5" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#2563eb">namespace ords · NetworkPolicy</text>
+  <rect x="440" y="582" width="305" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="592.5" y="603.4" font-size="12.5" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>
+  <rect x="440" y="626" width="305" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="592.5" y="647.4" font-size="12.5" text-anchor="middle" fill="#4b5563">Calico node · MetalLB speaker</text>
+  <rect x="440" y="670" width="305" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="592.5" y="691.4" font-size="12.5" text-anchor="middle" fill="#4b5563">/var/cache/ords-apex (APEX images)</text>
+  <rect x="820" y="582" width="305" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="972.5" y="603.4" font-size="12.5" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>
+  <rect x="820" y="626" width="305" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="972.5" y="647.4" font-size="12.5" text-anchor="middle" fill="#4b5563">Calico node · MetalLB speaker</text>
+  <rect x="820" y="670" width="305" height="34" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="972.5" y="691.4" font-size="12.5" text-anchor="middle" fill="#4b5563">/var/cache/ords-apex (APEX images)</text>
+  <rect x="420" y="214" width="725" height="64" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="782.5" y="241.2" font-size="15" text-anchor="middle" font-weight="bold">Service ords · LoadBalancer · 192.168.1.180 (MetalLB, layer 2)</text>
+  <text x="782.5" y="261.2" font-size="13" text-anchor="middle" fill="#4b5563">:443 → pods 8443 (HTTPS) · :80 → 8080 (redirects to HTTPS) · session affinity</text>
+  <rect x="607" y="784" width="350" height="64" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+  <text x="782.0" y="811.8" font-size="15" text-anchor="middle" font-weight="bold">Oracle database (existing)</text>
+  <text x="782.0" y="830.8" font-size="13" text-anchor="middle" fill="#4b5563">node.1apx.com:1521 · service pdb1</text>
+  <path d="M455.0,156 L455.0,214" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-user)"/>
+  <text x="463.0" y="186" font-size="12" text-anchor="start" font-weight="bold" fill="#2563eb">HTTPS</text>
+  <path d="M468,278 L468,400" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-user)"/>
+  <path d="M1097,278 L1097,400" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-user)"/>
+  <path d="M165.0,156 L165.0,300" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#m-admin)"/>
+  <text x="173.0" y="186" font-size="12" text-anchor="start" font-weight="bold" fill="#475569">kubectl :6443 · SSH</text>
+  <path d="M782.5,568 L782.5,784" fill="none" stroke="#c2410c" stroke-width="2" marker-end="url(#m-db)"/>
+  <text x="792.5" y="772" font-size="12" text-anchor="start" font-weight="bold" fill="#c2410c">JDBC :1521 · ORDS_PUBLIC_USER</text>
+  <path d="M1145,450 L1158,450 L1158,156" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#m-net)"/>
+  <text x="1150" y="186" font-size="12" text-anchor="end" font-weight="bold" fill="#7c3aed">HTTPS 443: ORDS image, APEX images</text>
+  <rect x="40" y="778" width="540" height="116" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1"/>
+  <text x="56" y="800" font-size="13" text-anchor="start" font-weight="bold">Legend</text>
+  <path d="M56,820 L96,820" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-user)"/>
+  <text x="108" y="824" font-size="12.5" text-anchor="start">User traffic (HTTPS through MetalLB to ORDS)</text>
+  <path d="M56,839 L96,839" fill="none" stroke="#c2410c" stroke-width="2" marker-end="url(#m-db)"/>
+  <text x="108" y="843" font-size="12.5" text-anchor="start">Database connection (JDBC, port 1521)</text>
+  <path d="M56,858 L96,858" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#m-admin)"/>
+  <text x="108" y="862" font-size="12.5" text-anchor="start">Administration (kubectl, SSH)</text>
+  <path d="M56,877 L96,877" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#m-net)"/>
+  <text x="108" y="881" font-size="12.5" text-anchor="start">Outbound HTTPS (image pull, APEX download)</text>
+</svg>
