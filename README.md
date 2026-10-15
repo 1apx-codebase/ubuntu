@@ -315,7 +315,8 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 
 **ORDS settings.** `k8s/config/ords-settings.conf` holds your existing server's `settings.xml` and `pool.xml` settings, one `key value` per line. Every pod applies them when it starts. Changes from the old server:
 
-- **Same:** context path `/apps`, APEX static files at `/i`, `plsql.gateway.mode direct` with `ords_util.authorize_plsql_gateway`, `misc.defaultPage apex`, `security.forceHTTPS true`, `database.api.enabled true`, Database Actions and REST-enabled SQL off, and all the `jdbc.*` timeouts and limits.
+- **Same:** context path `/apps`, APEX static files at `/i`, `plsql.gateway.mode direct` with `ords_util.authorize_plsql_gateway`, `misc.defaultPage apex`, `security.forceHTTPS true`, Database Actions and REST-enabled SQL off, and all the `jdbc.*` timeouts and limits.
+- **Turned off:** the Database API (`database.api.enabled false`), which the old server had on but nothing uses, because ORDS is now on the internet. The MongoDB API is off by default and is also set off explicitly (`mongo.enabled false`).
 - **Halved:** the connection pool, because there are now two ORDS pods. Each pod gets `InitialLimit 15`, `MinLimit 25` and `MaxLimit 150`, which add up to the old server's 30 / 50 / 300. Raise them if one pod has to carry all the traffic.
 - **Port 8443** for HTTPS inside the pod, instead of 443, so ORDS runs without root. The service still listens on 443.
 - **Left out:** `standalone.use.https` and `standalone.use.ssl.cert` (old settings, unused by current ORDS), the old server's access log path (`standalone.access.log`), the empty `misc.compress`, and the `default` → `plsql.gateway.mode` line, which isn't a real setting.
@@ -497,7 +498,7 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | No Kubernetes API token in the pods (`automountServiceAccountToken: false`); ORDS never talks to the API | `ords.yaml`, `ords-preflight.yaml`, `ords-install-job.yaml` |
 | Memory limits on every container, so a leak can't take a worker down | same |
 | Image pinned by digest, so it can't change even if Oracle re-publishes the tag | `deploy-ords.sh` |
-| ORDS is started directly (`ords serve`), because the image's entrypoint would switch Database Actions, REST-enabled SQL and the MongoDB API back on. All three stay off | `ords.yaml`, `ords-settings.conf` |
+| Only APEX and the PL/SQL gateway are served: the Database API, Database Actions, REST-enabled SQL and the MongoDB API are all off. ORDS is started directly (`ords serve`), because the image's entrypoint would switch the last three back on | `ords.yaml`, `ords-settings.conf` |
 | PL/SQL gateway calls go through `ords_util.authorize_plsql_gateway`, which allows only procedures that are explicitly permitted | `ords-settings.conf` |
 
 **Secrets handling**
