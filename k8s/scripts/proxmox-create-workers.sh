@@ -4,7 +4,7 @@
 # Safe to re-run: the template and any VM that already exists are skipped.
 set -euo pipefail
 
-STORAGE=local-lvm                 # VM disk storage (see: pvesm status)
+STORAGE=zfs-pool-data             # ZFS storage for the VM disks (see: pvesm status)
 BRIDGE=vmbr0                      # LAN bridge (see: ip -br link)
 TEMPLATE_ID=9000
 IMAGE_URL=https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img
@@ -23,7 +23,9 @@ WORKERS=("211 k8-worker-1 192.168.1.171"
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root on the Proxmox host." >&2; exit 1; }
 command -v qm >/dev/null || { echo "qm not found: this must run on the Proxmox host." >&2; exit 1; }
-pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" || { echo "Storage '$STORAGE' not found (pvesm status)." >&2; exit 1; }
+# The storage must exist and accept VM disks
+pvesm status --content images | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" \
+  || { echo "Storage '$STORAGE' not found, or it doesn't hold VM disks (pvesm status --content images)." >&2; exit 1; }
 ip link show "$BRIDGE" >/dev/null || { echo "Bridge '$BRIDGE' not found." >&2; exit 1; }
 
 # k8sadmin's public key from k8-control, which cloud-init installs on each worker

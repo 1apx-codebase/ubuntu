@@ -234,7 +234,7 @@ Notes:
 - **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.pem`, `*.p12`, `*.jks` and `*.pfx` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool.
 - **DNS records.** Add the "Before you start" rows of [DNS records to add](#dns-records-to-add): `node.1apx.com` (or set `DB_HOST_IP`), and optionally the node names. The Cloudflare records come later, at cutover.
-- **Proxmox details.** Check the VM storage name with `pvesm status` and the LAN bridge with `ip -br link` on the Proxmox host. The script assumes `local-lvm` and `vmbr0`, and needs Proxmox VE 7.2 or later.
+- **Proxmox details.** The worker VMs' disks go on the ZFS storage `zfs-pool-data`, and their network on the bridge `vmbr0`. Check both on the Proxmox host with `pvesm status --content images` and `ip -br link`, and change `STORAGE` or `BRIDGE` in the script if yours differ. The script needs Proxmox VE 7.2 or later.
 - **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `<user>@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
 
 In the steps below, run commands from the repo folder on k8-control, `/home/<user>/codebase/github/ubuntu`.
@@ -251,7 +251,7 @@ Script: [`k8s/scripts/proxmox-create-workers.sh`](k8s/scripts/proxmox-create-wor
 
 It fetches `k8sadmin`'s public key from k8-control, downloads the Ubuntu 26.04 cloud image, checks it against Ubuntu's published `SHA256SUMS`, and makes a template VM (ID 9000) from it. Then it creates full clones as VM 211 (`k8-worker-1`) and VM 212 (`k8-worker-2`), each with:
 
-- 4 cores (CPU type `host`), 8 GB RAM with ballooning off, and a 60 GB disk. Kubernetes schedules by memory, so memory that can shrink causes problems.
+- 4 cores (CPU type `host`), 8 GB RAM with ballooning off, and a 60 GB disk on the ZFS storage `zfs-pool-data`. Kubernetes schedules by memory, so memory that can shrink causes problems. The disk has discard on, so space freed inside the VM is returned to the ZFS pool.
 - A static IP, gateway `192.168.1.1`, DNS servers `192.168.1.1` and `8.8.8.8`, and search domain `1apx.com`, all set through cloud-init. This matches k8-control.
 - The `k8sadmin` account with that SSH key and passwordless sudo. Cloud images don't allow SSH password logins.
 - The QEMU guest agent enabled, and the VM set to start when the Proxmox host boots.
