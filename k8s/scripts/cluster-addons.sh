@@ -5,7 +5,7 @@
 # Safe to re-run.
 set -euo pipefail
 
-METALLB_VERSION=v0.16.0
+METALLB_VERSION=v0.16.1
 METRICS_SERVER_VERSION=v0.9.0
 K8S=$(cd "$(dirname "$0")/.." && pwd)   # the k8s/ folder
 # shellcheck source=common.sh

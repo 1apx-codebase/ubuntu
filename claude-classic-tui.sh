@@ -15,6 +15,7 @@ case "${1:-}" in
   *) echo "Usage: sudo $0 [--revert]" >&2; exit 1 ;;
 esac
 [ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo $0 $*" >&2; exit 1; }
+command -v jq >/dev/null || { echo "Needs jq: sudo apt install jq" >&2; exit 1; }
 f=$(mktemp)
 trap 'rm -f "$f"' EXIT
 

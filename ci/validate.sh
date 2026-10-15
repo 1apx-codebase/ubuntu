@@ -42,7 +42,7 @@ tool() {
 }
 
 K8S_VERSION=$(var "$K8S/scripts/node-prep.sh" K8S_VERSION)
-SHELLCHECK=$(tool shellcheck https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87)
+SHELLCHECK=$(tool shellcheck https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198)
 KUBECONFORM=$(tool kubeconform https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883)
 GITLEAKS=$(tool gitleaks https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb)
 # kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own
@@ -83,7 +83,8 @@ for m in "$K8S"/manifests/ords/*.yaml; do
   bash "$work/deploy-ords-hostalias.sh" --render "$m" > "$work/rendered/$n-hostalias.yaml"
 done
 if grep -l '__[A-Z_]*__' "$work"/rendered/*.yaml; then fail "placeholders left after rendering"; fi
-CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+# CRD schemas (MetalLB, Calico) from datreeio/CRDs-catalog, pinned to a commit
+CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 # Schemas are cached, so later runs (and --offline) don't need to download them
 mkdir -p "$TOOLS/kubeconform-cache"
 KUBECONFORM=("$KUBECONFORM" -cache "$TOOLS/kubeconform-cache")

@@ -7,5 +7,5 @@
 cb46786692404fb7955c6d31329c667d0dd8f1ff4821dc7869d0156c93d3a859  https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/operator-crds.yaml
 4e372754e4e1c3a61cf7c0ceb9bc9fff2f78aa6575dcadcb5ea4e716bb00dffa  https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/tigera-operator.yaml
 4fb598a7fce1ad1f8bbfb9004f5efcdb835082e92e06323cb7b8ce60260ed891  https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/custom-resources.yaml
-b0b9be2802f10aa32d45308b4457d06cde0c70544712c8d0cf5511657ffd2b69  https://raw.githubusercontent.com/metallb/metallb/v0.16.0/config/manifests/metallb-native.yaml
+bf25feebb7582ca7df845efd52ffbc2960d6cbf4cfc972f47fded9f788b67f0b  https://raw.githubusercontent.com/metallb/metallb/v0.16.1/config/manifests/metallb-native.yaml
 1cec29a5267809306a2c6ec74a3e449abbb705b4a8beed0c8a1963910f72c79b  https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
