@@ -246,7 +246,8 @@ spec:
             secretName: ords-tls
             defaultMode: 0440        # readable by the oracle group (fsGroup), not others
 ---
-# Keep at least one ORDS pod running during node drains and upgrades
+# Node drains and upgrades take down at most one ORDS pod at a time. With two or more pods,
+# the rest keep serving; with one, a drain isn't blocked (minAvailable: 1 would block it).
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -256,7 +257,7 @@ metadata:
     app.kubernetes.io/name: ords
     app.kubernetes.io/part-of: ords
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: ords

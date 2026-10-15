@@ -35,6 +35,7 @@ Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, o
   - [B.1 Security practices applied](#b1-security-practices-applied)
   - [B.2 Day-to-day operations](#b2-day-to-day-operations)
   - [B.3 Troubleshooting](#b3-troubleshooting)
+  - [B.4 Changing the number of ORDS pods](#b4-changing-the-number-of-ords-pods)
 
 ## Changes made after installation
 
@@ -318,7 +319,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 
 - **Same:** context path `/apps`, APEX static files at `/i`, `plsql.gateway.mode direct` with `ords_util.authorize_plsql_gateway`, `misc.defaultPage apex`, `security.forceHTTPS true`, Database Actions and REST-enabled SQL off, and all the `jdbc.*` timeouts and limits.
 - **Turned off:** the Database API (`database.api.enabled false`), which the old server had on but nothing uses, because ORDS is now on the internet. The MongoDB API is off by default and is also set off explicitly (`mongo.enabled false`).
-- **Halved:** the connection pool, because there are now two ORDS pods. Each pod gets `InitialLimit 15`, `MinLimit 25` and `MaxLimit 150`, which add up to the old server's 30 / 50 / 300. Raise them if one pod has to carry all the traffic.
+- **Halved:** the connection pool, because there are now two ORDS pods. Each pod gets `InitialLimit 15`, `MinLimit 25` and `MaxLimit 150`, which add up to the old server's 30 / 50 / 300. To run a different number of pods, see [B.4](#b4-changing-the-number-of-ords-pods).
 - **Port 8443** for HTTPS inside the pod, instead of 443, so ORDS runs without root. The service still listens on 443.
 - **Encrypted database traffic.** With `DB_ENCRYPTION=true` (the default in `deploy-ords.sh`), every connection to the database is encrypted and checksummed with Oracle Native Network Encryption (AES, SHA-2), or refused. ORDS, the preflight check and the install Job all require it. Databases allow it by default (`SQLNET.ENCRYPTION_SERVER = accepted`), so nothing changes on the database server, unless it's set to `rejected` (see [B.3](#b3-troubleshooting), `ORA-12660`).
 - **Left out:** `standalone.use.https` and `standalone.use.ssl.cert` (old settings, unused by current ORDS), the old server's access log path (`standalone.access.log`), the empty `misc.compress`, and the `default` → `plsql.gateway.mode` line, which isn't a real setting.
@@ -332,7 +333,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 5. **APEX images.** Uses the database's APEX version, unless you set `APEX_VERSION`, and checks that Oracle publishes `apex_<version>.zip` for it. Each pod downloads the images when it starts (about 290 MB, 480 MB unpacked) into its own temporary volume (`emptyDir`), which adds a minute or so to a pod's start. They're not kept on the workers, so the pods need no host folder. The workers need HTTPS access to `download.oracle.com`.
 6. **ORDS version.** If the database's ORDS version differs from the image (`ORDS_IMAGE`, 26.2.3 by default), the script stops. Either set `ORDS_IMAGE` to the database's version, or set `INSTALL_OR_UPGRADE_SCHEMA=true`. In that case it asks for the SYS password, runs the one-time install/upgrade Job (stopping as soon as it fails, or after 30 minutes), and **then deletes the SYS password** from the cluster. Upgrading the schema affects every ORDS server using this database, so upgrade your existing server to the same version. The manifests were checked against the 26.2.3 image (its `ords` commands, user and file layout); recent versions share them, but check an older one before using it, because older images differ.
 7. **Deploys ORDS:**
-   - **Two replicas**, normally one on each worker, with a PodDisruptionBudget so one keeps running during node maintenance. The spread is a preference, so both replicas can run on one worker while the other is drained or down.
+   - **Two replicas**, normally one on each worker, with a PodDisruptionBudget so node maintenance takes down only one at a time. The spread is a preference, so both replicas can run on one worker while the other is drained or down.
    - **No shared storage.** Each pod writes its own ORDS config when it starts, and never sees the SYS password.
    - **Runs `ords serve` directly** instead of the image's entrypoint. The entrypoint turns on Database Actions, REST-enabled SQL and the MongoDB API at every start, which would override your settings.
    - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, a read-only root filesystem, and memory limits (3 GiB for ORDS). They write only to their own temporary volumes: ORDS's config, the APEX images and `/tmp`.
@@ -567,13 +568,13 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | Renew the certificate | Put the new files in `ssl/` with the same names and run `deploy-ords.sh`. Check the expiry date in use with `kubectl get secret ords-tls -n ords -o jsonpath='{.data.tls\.crt}' \| base64 -d \| openssl x509 -noout -enddate` |
 | Upgrade ORDS | See "ORDS upgrades" under [Running the cluster](#running-the-cluster). Tag and digest both change |
 | New APEX version in the database | Run `deploy-ords.sh`. It finds the new version, and the pods it replaces download the new images when they start |
-| More replicas | Set `replicas` in `ords.yaml` and run `deploy-ords.sh` (not `kubectl scale`, which the next deploy would undo). Each pod opens up to `jdbc.MaxLimit` (150) database connections, so check the database's session limit first |
+| More or fewer ORDS pods | See [B.4](#b4-changing-the-number-of-ords-pods) |
 
 **Maintenance**
 
 | Task | How |
 |------|-----|
-| Take a worker down (patching, reboot) | `kubectl drain k8-worker-1 --ignore-daemonsets --delete-emptydir-data`, do the work, then `kubectl uncordon k8-worker-1`. The PodDisruptionBudget keeps one ORDS pod running, and the other worker takes both while this one is out. Then `kubectl rollout restart deployment/ords -n ords` to spread them again |
+| Take a worker down (patching, reboot) | `kubectl drain k8-worker-1 --ignore-daemonsets --delete-emptydir-data`, do the work, then `kubectl uncordon k8-worker-1`. The PodDisruptionBudget lets only one ORDS pod go down at a time, and the other worker takes both while this one is out. Then `kubectl rollout restart deployment/ords -n ords` to spread them again |
 | Back up the cluster | `sudo k8s/scripts/etcd-backup.sh`, or check that the daily cron ran: `sudo ls -lt /var/backups/kubernetes \| head` |
 | Cluster certificates | `sudo kubeadm certs check-expiration` once a month. They expire after a year unless the control plane is upgraded |
 | Before any commit | `ci/validate.sh` |
@@ -634,3 +635,45 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 **A worker is `NotReady`.** On the worker: `sudo systemctl status kubelet containerd` and `sudo journalctl -u kubelet -n 50`. If the log says it can't reach `k8-control.1apx.com`, check that `/etc/hosts` still has the `# BEGIN k8s-cluster` block, and re-run `join-workers.sh` if not.
 
 **Look inside a pod.** `kubectl exec -it -n ords deploy/ords -- bash` opens a shell as the `oracle` user. From there, `ords --config /etc/ords/config config list` shows the active settings, and `curl -sk --resolve www.1apx.com:8443:127.0.0.1 https://www.1apx.com:8443/apps/_/landing -o /dev/null -w '%{http_code}\n'` runs the same check as the readiness probe (`200` when the database is reachable).
+
+### B.4 Changing the number of ORDS pods
+
+The cluster runs **two** ORDS pods, one on each worker. The number is `replicas` in [`ords.yaml`](k8s/manifests/ords/ords.yaml), and each pod's database connection pool is in [`ords-settings.conf`](k8s/config/ords-settings.conf). Change both together, so the pods' connections still add up to what the database expects.
+
+**Pool sizes.** The old single server used `InitialLimit 30`, `MinLimit 50` and `MaxLimit 300`. Divide those by the number of pods:
+
+| Pods | `jdbc.InitialLimit` | `jdbc.MinLimit` | `jdbc.MaxLimit` | Notes |
+|------|---------------------|-----------------|-----------------|-------|
+| 1 | 30 | 50 | 300 | No redundancy (see below) |
+| 2 | 15 | 25 | 150 | Current setting |
+| 3 | 10 | 17 | 100 | The most two workers should carry |
+| 4 | 8 | 13 | 75 | Add a third worker first |
+
+To allow more connections in total, raise `MaxLimit`, but check the database's limits first. As a DBA, `select name, value from v$parameter where name in ('processes', 'sessions')` shows the limits, and `select count(*) from v$session` shows current use. Every pod keeps at least `MinLimit` sessions open, and can open up to `MaxLimit`.
+
+**Room on the workers.** Each worker has 4 vCPUs and 8 GB of memory. Each ORDS pod reserves 0.5 CPU and 1.5 GiB, and may use up to 3 GiB. Two pods per worker is a sensible maximum, so two workers carry up to **3 pods**. That leaves room for the extra pod a rollout starts before stopping an old one, and for one worker taking every pod while the other is drained. For more pods, add a worker first.
+
+**Add or remove pods.** The steps are the same either way:
+
+1. Edit `replicas` in `k8s/manifests/ords/ords.yaml`.
+2. Edit the three `jdbc.*Limit` lines in `k8s/config/ords-settings.conf` to match the table.
+3. Run `ci/validate.sh` and commit.
+4. Run `k8s/scripts/deploy-ords.sh`. It asks for no passwords, because they're already stored.
+   - **Adding pods:** each new pod downloads the APEX images and starts, which takes a minute or two.
+   - **Removing pods:** Kubernetes stops the extra pods. Each finishes its requests during a 10-second grace period first.
+   - **Changed pool sizes:** the pods are then also replaced one at a time, so the new sizes take effect without downtime.
+
+Don't use `kubectl scale` for a lasting change. The next `deploy-ords.sh` sets `replicas` back to the value in `ords.yaml`. It's fine in an emergency, for example `kubectl scale deployment/ords -n ords --replicas=3`, but then update `ords.yaml` as above.
+
+**Check the result:**
+
+| Check | Command |
+|-------|---------|
+| Number of pods, which worker each is on, and readiness | `kubectl get pods -n ords -o wide`: each pod `1/1 Running`, spread across the workers |
+| The rollout finished | `kubectl rollout status deployment/ords -n ords` |
+| Pool sizes in use | `kubectl exec -n ords deploy/ords -- ords --config /etc/ords/config config list \| grep -i limit` |
+| Database sessions per pod (as a DBA) | `select machine, count(*) from v$session where username = 'ORDS_PUBLIC_USER' group by machine`, one row per pod |
+
+The pods are spread across the workers as a preference: with three pods on two workers, one worker runs two. After a worker has been down, all pods may be on one worker; `kubectl rollout restart deployment/ords -n ords` spreads them again.
+
+**Running a single pod** gives up redundancy. If its worker fails, ORDS is down for about 6–7 minutes: Kubernetes waits 5 minutes before replacing a pod on an unreachable node, and the new pod needs a minute or two to start. Draining that worker for maintenance also causes a short outage. Settings changes, certificate renewals and ORDS upgrades still cause no downtime, because the new pod is ready before the old one stops. The second worker then mostly stands by, as the place the pod moves to when the first is down.
