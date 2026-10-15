@@ -149,6 +149,12 @@ spec:
           # Runs ORDS directly instead of the image's entrypoint, which would switch
           # Database Actions, REST-enabled SQL and the MongoDB API on at every start.
           command: ["ords", "--config", "/etc/ords/config", "serve"]
+          env:
+            # The ords launcher sets no heap size, so Java would default to a quarter of
+            # the memory limit (768 MiB of 3 GiB). Give the heap 75%; the rest is for
+            # Java's own memory and threads.
+            - name: JDK_JAVA_OPTIONS
+              value: "-XX:MaxRAMPercentage=75"
           ports:
             - name: https
               containerPort: 8443
@@ -259,7 +265,9 @@ spec:
   allocateLoadBalancerNodePorts: false
   selector:
     app: ords
-  # APEX and Database Actions keep sessions in the ORDS process, so keep each client on one pod
+  # APEX keeps session state in the database, so either pod can serve any request.
+  # Affinity keeps each client on one pod anyway: its requests share that pod's warm
+  # caches, and one pod's log shows a user's whole session when troubleshooting.
   sessionAffinity: ClientIP
   ports:
     - name: https

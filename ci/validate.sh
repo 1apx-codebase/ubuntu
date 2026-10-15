@@ -47,6 +47,8 @@ GITLEAKS=$(tool gitleaks https://github.com/gitleaks/gitleaks/releases/download/
 # kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own hash
 KUBEADM_URL="https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/kubeadm"
 KUBEADM=$(tool kubeadm "$KUBEADM_URL" "$(curl -fsSL "$KUBEADM_URL.sha256")")
+# Arimo (Arial's metrics) for docs/architecture.py, pinned to a google/fonts commit
+ARIMO=$(tool arimo.ttf https://raw.githubusercontent.com/google/fonts/d7b3b07542b00e0ec7c48886d305eb8f08ef89d5/ofl/arimo/Arimo%5Bwght%5D.ttf e43898b143ec826ac8cb4034816458a7047fbe0836558de2a1f8c6223ae3e0ca)
 python3 -c 'import yaml' 2>/dev/null || { echo "Needs Python's yaml module (apt install python3-yaml)." >&2; exit 1; }
 
 work=$(mktemp -d)
@@ -174,6 +176,33 @@ if [ "$ONLINE" = true ]; then
     > "$work/calico-installation.yaml"
   check "Calico Installation with our pod CIDR" "$KUBECONFORM" -strict -kubernetes-version "$K8S_VERSION" \
     -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
+fi
+
+echo "== Documentation"
+# Relative links in the README point at files that exist, and #anchors at real headings
+if python3 - README.md <<'PY'; then pass "README links and anchors"; else fail "README links and anchors"; fi
+import os, re, sys
+md = open(sys.argv[1]).read()
+def slug(h):
+    return re.sub(r"[^\w\- ]", "", h.replace("`", "").strip().lower()).replace(" ", "-")
+anchors = {slug(h) for h in re.findall(r"^#{1,6} (.+)$", md, re.M)}
+bad = 0
+for target in re.findall(r"\]\(([^)\s]+)\)", md):
+    if target.startswith(("http://", "https://", "mailto:")):
+        continue
+    path, _, frag = target.partition("#")
+    if path and not os.path.exists(path):
+        print(f"missing file: {target}", file=sys.stderr); bad = 1
+    elif not path and frag not in anchors:
+        print(f"missing heading: {target}", file=sys.stderr); bad = 1
+sys.exit(bad)
+PY
+# The diagram is generated: the committed SVG must be exactly what the script produces
+if python3 docs/architecture.py "$work/architecture.svg" "$ARIMO" >/dev/null \
+   && cmp -s "$work/architecture.svg" docs/architecture.svg; then
+  pass "docs/architecture.svg matches docs/architecture.py, whose layout checks pass"
+else
+  fail "docs/architecture.svg is out of date, or its layout checks fail (see docs/architecture.py)"
 fi
 
 echo "== File hygiene"

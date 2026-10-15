@@ -259,10 +259,11 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
    - **Two replicas**, normally one on each worker, with a PodDisruptionBudget so one keeps running during node maintenance. The spread is a preference, so both replicas can run on one worker while the other is drained or down.
    - **No shared storage.** Each pod writes its own ORDS config when it starts, and never sees the SYS password.
    - **Runs `ords serve` directly** instead of the image's entrypoint. The entrypoint turns on Database Actions, REST-enabled SQL and the MongoDB API at every start, which would override your settings.
+   - **Java heap** set to 75% of the 3 GiB memory limit. The `ords` launcher sets none, and Java's default would be a quarter.
    - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, and memory limits (3 GiB for ORDS). The APEX images cache, `/var/cache/ords-apex` on each worker, is created by `node-prep.sh` and owned by that user.
    - **Rolling updates without dropped requests:** a stopping pod keeps serving for 10 seconds while the Service and MetalLB stop sending it new connections.
    - **Health checks** connect over HTTPS and send `Host: ords.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
-   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://ords.1apx.com/...`. It has client-IP session affinity, so APEX sessions stay on one pod. It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
+   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://ords.1apx.com/...`. It has client-IP session affinity, so each user stays on one pod. APEX keeps its session state in the database, so either pod could serve any request; affinity keeps a user on a pod with warm caches, and puts a user's whole session in one pod's log. It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
    - **Image pinned by digest** (`ORDS_IMAGE` is `...:26.2.3@sha256:...`), so the image can't change even if Oracle re-publishes the tag.
 
 **Rehearsed on k8-control (2026-10-15):** the pod's config script was run with `ords-settings.conf` and the real certificate, then ORDS 26.2.3 was started from it. ORDS served the full Sectigo chain, which verified cleanly against the public CAs. HTTP redirected to HTTPS, and the health checks behaved as described. The database login itself hasn't been tested, because `node.1apx.com` doesn't resolve from here.
@@ -308,10 +309,11 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 | Kubernetes | The ORDS manifests rendered exactly as `deploy-ords.sh` applies them (with and without `DB_HOST_IP`), and the MetalLB pool, against the Kubernetes schemas for the cluster's version with kubeconform `-strict`. The kubeadm config with the real `kubeadm` of the same version. The audit policy's shape. `bash -n` on the scripts inside the manifests |
 | Consistency | Values repeated across files agree: Kubernetes version, pod CIDR, node IPs, DNS servers, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
 | Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, and Calico's Installation with our pod CIDR is valid |
+| Documentation | Every relative link and `#anchor` in the README resolves. `docs/architecture.svg` is exactly what `docs/architecture.py` generates, so the diagram can't drift from its source, and the generator's own checks pass (labels fit their boxes, no arrow crosses a label, no text under 14 px) |
 | Hygiene | LF line endings, no trailing whitespace, a final newline in every file |
 | Secrets | gitleaks over the whole git history; no key, certificate or kubeconfig file tracked |
 
-The tools (ShellCheck, kubeconform, kubeadm, gitleaks) are downloaded on first use, checked against pinned SHA-256s, and cached in `~/.cache/ubuntu-repo-tools`. The script also needs Python's yaml module (`python3-yaml`, installed on k8-control).
+The tools (ShellCheck, kubeconform, kubeadm, gitleaks, and the Arimo font the diagram is measured with) are downloaded on first use, checked against pinned SHA-256s, and cached in `~/.cache/ubuntu-repo-tools`. The script also needs Python's yaml module (`python3-yaml`, installed on k8-control).
 
 Repo conventions: [`.gitattributes`](.gitattributes) stores text files with LF line endings, [`.editorconfig`](.editorconfig) sets the same for editors, and [`.gitignore`](.gitignore) keeps keys, certificates, kubeconfigs and etcd backups out of git.
 
@@ -532,7 +534,7 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 | No answer from `192.168.1.180` at all | MetalLB's speaker answers ARP for it: `kubectl get pods -n metallb-system -o wide` should show a running speaker on each worker. `ip neigh show 192.168.1.180` on a LAN machine shows which MAC answered |
 | Certificate warning in the browser | Check what's served: `openssl s_client -connect 192.168.1.180:443 -servername ords.1apx.com -showcerts </dev/null`. Expect `*.1apx.com` and the full chain |
 | `/i/` images missing (APEX pages unstyled) | `kubectl get configmap ords-db -n ords -o yaml` should show `APEX_VERSION`, and `ls /var/cache/ords-apex/` on the worker should list it with a `.complete` file. If `APEX_VERSION` is empty, set it in `deploy-ords.sh` and redeploy |
-| APEX logs users out between requests | The two pods each hold their own sessions. The Service keeps each client on one pod (`sessionAffinity: ClientIP`), so check it's still there: `kubectl get svc ords -n ords -o jsonpath='{.spec.sessionAffinity}'` |
+| APEX logs users out, or shows "session expired" | APEX keeps sessions in the database, so switching pods doesn't end them. Its session cookie is tied to the host name and HTTPS, so check users open `https://ords.1apx.com/...`, not the IP address or `http://`. Then check both pods are `1/1 Ready`: a pod restarting mid-request can fail a page, not a session |
 
 **Suspect the network policy?** Remove it for a moment: `kubectl delete networkpolicy ords -n ords`, and test again. If that fixes it, a connection ORDS needs isn't in `network-policy.yaml`: add it there, commit, and run `deploy-ords.sh`, which also restores the policy. If it doesn't help, run `deploy-ords.sh` anyway to put the policy back.
 
