@@ -14,6 +14,7 @@ Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, o
   - [Kernel settings](#kernel-settings)
   - [Firewall](#firewall)
   - [Public access through Cloudflare](#public-access-through-cloudflare)
+  - [DNS records to add](#dns-records-to-add)
   - [Before you start](#before-you-start)
   - [Step 1: Create the admin account (on k8-control)](#step-1-create-the-admin-account-on-k8-control)
   - [Step 2: Create the worker VMs (on the Proxmox host)](#step-2-create-the-worker-vms-on-the-proxmox-host)
@@ -201,8 +202,29 @@ Things to know:
 
 1. Build the cluster and pass [Step 8](#step-8-check-the-cluster), which tests ORDS directly from the LAN.
 2. Add the router's port forward.
-3. Add a test record, such as `test.1apx.com` → your public IP, Proxied, and open `https://test.1apx.com/apps/`. The certificate covers it, and the test exercises the whole path: Cloudflare, the router, the source ranges and ORDS.
-4. Point `www.1apx.com` at your public IP (Proxied), and delete the test record. To roll back, point `www` back at its old target.
+3. Add the `test.1apx.com` record ([DNS records to add](#dns-records-to-add)), and open `https://test.1apx.com/apps/`. The certificate covers it, and the test exercises the whole path: Cloudflare, the router, the source ranges and ORDS.
+4. Replace the `www.1apx.com` records as described in [DNS records to add](#dns-records-to-add), and delete the test record. To roll back, restore `www`'s old records.
+
+### DNS records to add
+
+Every DNS record the setup needs, in the order you add them. "Router" means the LAN's DNS server, `192.168.1.1`; "Cloudflare" means the `1apx.com` zone in Cloudflare's dashboard.
+
+| When | Name | Type | Value | Where | Required |
+|------|------|------|-------|-------|----------|
+| [Before you start](#before-you-start) | `node.1apx.com` | A | The database server's IP | Router | Yes, unless you set `DB_HOST_IP` in `deploy-ords.sh` instead |
+| [Before you start](#before-you-start) (optional) | `k8-control.1apx.com` | A | `192.168.1.170` | Router | Only to run `kubectl` from another machine, or to reach k8-control by name |
+| [Before you start](#before-you-start) (optional) | `k8-worker-1.1apx.com` | A | `192.168.1.171` | Router | No: to reach the worker by name |
+| [Before you start](#before-you-start) (optional) | `k8-worker-2.1apx.com` | A | `192.168.1.172` | Router | No: to reach the worker by name |
+| [Cutover](#public-access-through-cloudflare), step 3 | `test.1apx.com` | A | Your public IP | Cloudflare, **Proxied** | Yes, temporarily: delete it in step 4 |
+| [Cutover](#public-access-through-cloudflare), step 4 | `www.1apx.com` | A | Your public IP | Cloudflare, **Proxied** | Yes: this is the name users open |
+
+Notes:
+
+- **`node.1apx.com`** is the only record ORDS needs inside the LAN: the ORDS pods connect to the database by that name. Setting `DB_HOST_IP` is the sturdier choice, because a node that has switched to its second DNS server, `8.8.8.8`, can't see router-only records (see [DNS](#dns)).
+- **The node names** aren't needed by the cluster: every node has them in `/etc/hosts`. But the admin kubeconfig addresses the API server as `k8-control.1apx.com`, so a copy of it on another machine needs that record.
+- **`www.1apx.com` already exists.** Before step 4 of the cutover, note its current records in Cloudflare (they may be `A`, `AAAA` or `CNAME`), so you can roll back. Then replace them with the single `A` record above, and **delete any `AAAA` or `CNAME` record for `www`**: if an old one stays, Cloudflare can still send part of the traffic to the old server. Cloudflare still answers IPv6 visitors, from its own addresses.
+- **Proxied** (orange cloud) is what makes Cloudflare's protection and the [source-range rule](#public-access-through-cloudflare) work. A "DNS only" record would send users straight to your IP, where the Service refuses them.
+- **If your public IP changes,** the two Cloudflare records must follow it (see [Public access through Cloudflare](#public-access-through-cloudflare)).
 
 ### Before you start
 
@@ -210,11 +232,7 @@ Things to know:
 - **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 7 checks both and tells you if anything needs changing.
 - **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.pem`, `*.p12`, `*.jks` and `*.pfx` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool.
-- **DNS records.** `1apx.com` is on Cloudflare, but `k8-control`, the workers and `node.1apx.com` have no records. You need:
-  - `node.1apx.com` → the database server's IP. Or set `DB_HOST_IP` in `deploy-ords.sh`, which maps the name for the ORDS pods only.
-  - Optionally, the three nodes. The scripts add them to `/etc/hosts` on every node anyway.
-
-  The name users open, `www.1apx.com`, is already a public Cloudflare record. It moves to the cluster at cutover (see [Public access through Cloudflare](#public-access-through-cloudflare)).
+- **DNS records.** Add the "Before you start" rows of [DNS records to add](#dns-records-to-add): `node.1apx.com` (or set `DB_HOST_IP`), and optionally the node names. The Cloudflare records come later, at cutover.
 - **Proxmox details.** Check the VM storage name with `pvesm status` and the LAN bridge with `ip -br link` on the Proxmox host. The script assumes `local-lvm` and `vmbr0`, and needs Proxmox VE 7.2 or later.
 - **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `vaviles@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
 
@@ -293,7 +311,7 @@ Script: [`k8s/scripts/cluster-addons.sh`](k8s/scripts/cluster-addons.sh). Run `k
 ### Step 7: Deploy ORDS
 
 Script: [`k8s/scripts/deploy-ords.sh`](k8s/scripts/deploy-ords.sh). It uses the settings in [`k8s/config/ords-settings.conf`](k8s/config/ords-settings.conf) and the manifests [`ords.yaml`](k8s/manifests/ords/ords.yaml), [`ords-preflight.yaml`](k8s/manifests/ords/ords-preflight.yaml) and [`ords-install-job.yaml`](k8s/manifests/ords/ords-install-job.yaml) in `k8s/manifests/ords/`.
-Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. Then run `k8s/scripts/deploy-ords.sh` as `vaviles`.
+Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. `node.1apx.com` must resolve, or `DB_HOST_IP` be set (see [DNS records to add](#dns-records-to-add)). Then run `k8s/scripts/deploy-ords.sh` as `vaviles`.
 
 **ORDS settings.** `k8s/config/ords-settings.conf` holds your existing server's `settings.xml` and `pool.xml` settings, one `key value` per line. Every pod applies them when it starts. Changes from the old server:
 
