@@ -3,23 +3,35 @@
 # selection and copy work. Run with --revert to go back to fullscreen.
 set -euo pipefail
 
-SETTINGS=/root/.claude/settings.json   # used by `sudo claude`
+# user:settings file. root's is used by `sudo claude`.
+TARGETS=(
+  root:/root/.claude/settings.json
+  vaviles:/home/vaviles/.claude/settings.json
+)
 
-if [[ ! -f "$SETTINGS" ]]; then
-  mkdir -p "$(dirname "$SETTINGS")"
-  echo '{}' > "$SETTINGS"
-fi
+for t in "${TARGETS[@]}"; do
+  owner=${t%%:*}
+  settings=${t#*:}
 
-cp -a "$SETTINGS" "$SETTINGS.bak-$(date +%F-%H%M%S)"
+  if [[ ! -f "$settings" ]]; then
+    install -d -o "$owner" -g "$owner" "$(dirname "$settings")"
+    echo '{}' > "$settings"
+    chown "$owner:$owner" "$settings"
+  fi
 
-f=$(mktemp)
-if [[ "${1:-}" == "--revert" ]]; then
-  jq 'del(.tui)' "$SETTINGS" > "$f"
-else
-  jq '.tui = "default"' "$SETTINGS" > "$f"
-fi
-cat "$f" > "$SETTINGS"
-rm -f "$f"
+  cp -a "$settings" "$settings.bak-$(date +%F-%H%M%S)"
 
-# Verify
-jq . "$SETTINGS"
+  # Write through cat so the file keeps its owner and mode
+  f=$(mktemp)
+  if [[ "${1:-}" == "--revert" ]]; then
+    jq 'del(.tui)' "$settings" > "$f"
+  else
+    jq '.tui = "default"' "$settings" > "$f"
+  fi
+  cat "$f" > "$settings"
+  rm -f "$f"
+
+  # Verify
+  echo "$settings"
+  jq . "$settings"
+done

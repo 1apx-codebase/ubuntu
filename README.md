@@ -316,11 +316,12 @@ On 2026-10-15, text couldn't be copied out of Claude Code (run as `sudo claude`)
 
 **Fix.** Switch Claude Code to its classic interface, so the terminal handles selection and copy itself:
 
-| Change | File |
-|--------|------|
-| Add `"tui": "default"` | `/root/.claude/settings.json` |
+| Change | File | Used by |
+|--------|------|---------|
+| Add `"tui": "default"` | `/root/.claude/settings.json` | `sudo claude` |
+| Add `"tui": "default"` | `/home/vaviles/.claude/settings.json` | `claude` as `vaviles` |
 
-The file now reads:
+Both files now read:
 
 ```json
 {
@@ -329,12 +330,12 @@ The file now reads:
 }
 ```
 
-The original is backed up at `/root/.claude/settings.json.bak-2026-10-15-015041`.
+The originals are backed up at `/root/.claude/settings.json.bak-2026-10-15-015041` and `/home/vaviles/.claude/settings.json.bak-2026-10-15-015744`.
 
-Script: [`claude-classic-tui.sh`](claude-classic-tui.sh). Run it with `sudo ./claude-classic-tui.sh`, or `sudo ./claude-classic-tui.sh --revert` to go back to fullscreen. Each run backs up the settings file first.
+Script: [`claude-classic-tui.sh`](claude-classic-tui.sh). Run it with `sudo ./claude-classic-tui.sh`, or `sudo ./claude-classic-tui.sh --revert` to go back to fullscreen. It changes both files, backs each one up first, and keeps each file's owner.
 
 Notes:
 
 - **Restart Claude Code after the change.** If the setting changes while a session is running, the screen can go blank. Press Ctrl+L to redraw, or exit and run `sudo claude` again, then use `/resume` to continue the conversation.
-- **Settings are per user.** `sudo claude` reads `/root/.claude/settings.json`. Running `claude` as `vaviles` reads `/home/vaviles/.claude/settings.json`, which doesn't have this setting.
+- **Settings are per user.** `sudo claude` reads `/root/.claude/settings.json`, and `claude` as `vaviles` reads `/home/vaviles/.claude/settings.json`, so both need the setting. To cover another user, add them to `TARGETS` at the top of the script.
 - **Without this fix**, you can still copy in the fullscreen interface by holding a key while you drag: Shift in most Linux and Windows terminals and PuTTY, Option in iTerm2, Fn in macOS Terminal.app.
