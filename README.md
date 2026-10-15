@@ -63,14 +63,5 @@ It's safe to re-run, because each step is skipped if it's already done. The scri
 
 Two steps happen on github.com: adding the key under **Settings → SSH and GPG keys**, and creating the repo. To use a different account, repo, name or email, edit the variables at the top of the script.
 
-### Push later changes
-
-```bash
-cd ~/codebase/github/ubuntu
-git add -A
-git commit -m "Describe the change"
-git push
-```
-
 The GitHub CLI (`gh`) is installed on this machine but not logged in. The SSH setup doesn't need it.
 
