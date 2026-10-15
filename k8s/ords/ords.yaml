@@ -1,0 +1,155 @@
+# ORDS: two stateless replicas, one per worker, behind a MetalLB LAN IP.
+# Applied by deploy-ords.sh, which replaces __ORDS_IMAGE__ and __LB_IP__.
+#
+# Each pod builds its own ORDS config in an emptyDir from the ords-db ConfigMap and
+# the ORDS_PUBLIC_USER password, so no shared volume is needed. The SYS password
+# is never given to these pods.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ords
+  namespace: ords
+  labels:
+    app: ords
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: ords
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ords
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 54321            # "oracle" user in the ORDS image
+        fsGroup: 54321
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread the replicas across the two workers
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ords
+      initContainers:
+        - name: config
+          image: __ORDS_IMAGE__
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              c="ords --config /etc/ords/config config"
+              $c set db.connectionType basic
+              $c set db.hostname "$DB_HOST"
+              $c set db.port "$DB_PORT"
+              $c set db.servicename "$DB_SERVICE"
+              $c set db.username ORDS_PUBLIC_USER
+              $c set standalone.http.port 8080
+              $c set feature.sdw true
+              $c set restEnabledSql.active true
+              pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
+              printf '%s\n%s\n' "$pw" "$pw" | $c secret db.password
+          envFrom:
+            - configMapRef:
+                name: ords-db
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ords/config
+            - name: runtime
+              mountPath: /run/secrets/ords-runtime
+              readOnly: true
+      containers:
+        - name: ords
+          image: __ORDS_IMAGE__
+          # No command: the image's entrypoint finds the config and runs "ords serve".
+          # Don't give this container DBHOST or ORACLE_PWD, or the entrypoint tries to install ORDS.
+          env:
+            - name: ORDS_DB_WAIT_RETRY
+              value: "30"
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1536Mi
+            limits:
+              memory: 3Gi
+          # /ords/ answers 302 as soon as ORDS is listening, even if the database is down
+          startupProbe:
+            httpGet:
+              path: /ords/
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60     # up to 10 minutes, including the database wait
+          # The landing page returns 571 when ORDS can't reach the database,
+          # so a pod only receives traffic while its connection pool works
+          readinessProbe:
+            httpGet:
+              path: /ords/_/landing
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ords/config
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: runtime
+          secret:
+            secretName: ords-db-runtime
+---
+# Keep at least one ORDS pod running during node drains and upgrades
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ords
+  namespace: ords
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ords
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ords
+  namespace: ords
+  annotations:
+    metallb.io/loadBalancerIPs: __LB_IP__
+spec:
+  type: LoadBalancer
+  selector:
+    app: ords
+  # Database Actions keeps a session in the ORDS process, so keep each client on one pod
+  sessionAffinity: ClientIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

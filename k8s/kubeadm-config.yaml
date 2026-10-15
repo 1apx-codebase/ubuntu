@@ -1,0 +1,31 @@
+# kubeadm configuration for the control plane on k8-control.
+# Used by control-plane-init.sh.
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.1.170
+  bindPort: 6443
+nodeRegistration:
+  name: k8-control
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.36.5
+clusterName: k8-1apx
+# A DNS name rather than an IP, so more control-plane nodes can be added later
+controlPlaneEndpoint: k8-control.1apx.com:6443
+networking:
+  # Must not overlap the LAN (192.168.1.0/24)
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+  dnsDomain: cluster.local
+apiServer:
+  certSANs:
+    - k8-control
+    - k8-control.1apx.com
+    - 192.168.1.170
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd

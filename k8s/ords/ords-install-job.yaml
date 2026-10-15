@@ -1,0 +1,67 @@
+# One-time job that installs (or upgrades) the ORDS schema in the Oracle database.
+# It's the only thing that uses the SYS password. Applied by deploy-ords.sh,
+# which replaces __ORDS_IMAGE__.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ords-install
+  namespace: ords
+  labels:
+    app: ords-install
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: ords-install
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 54321            # "oracle" user in the ORDS image
+        fsGroup: 54321
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: install
+          image: __ORDS_IMAGE__
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # stdin: SYS password, then the ORDS_PUBLIC_USER password
+              printf '%s\n%s\n' \
+                "$(cat /run/secrets/ords-admin/ORACLE_PWD)" \
+                "$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)" \
+              | ords --config /tmp/ords-config install \
+                  --admin-user SYS --proxy-user \
+                  --db-hostname "$DB_HOST" --db-port "$DB_PORT" --db-servicename "$DB_SERVICE" \
+                  --feature-sdw true --log-folder /tmp/ords-logs --password-stdin
+          envFrom:
+            - configMapRef:
+                name: ords-db
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: admin
+              mountPath: /run/secrets/ords-admin
+              readOnly: true
+            - name: runtime
+              mountPath: /run/secrets/ords-runtime
+              readOnly: true
+      volumes:
+        - name: admin
+          secret:
+            secretName: ords-db-admin
+        - name: runtime
+          secret:
+            secretName: ords-db-runtime
