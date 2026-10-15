@@ -222,7 +222,7 @@ kubectl rollout status deployment/ords -n "$NAMESPACE" --timeout=20m
 kubectl get pods,svc -n "$NAMESPACE" -o wide
 
 # 8. Test ORDS directly at LB_IP, bypassing Cloudflare and DNS (the public name resolves to
-#    Cloudflare). This machine is on the LAN, which the Service allows.
+#    Cloudflare). k8-control is one of the nodes, which the Service allows.
 direct() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$ORDS_HOSTNAME:443:$LB_IP" "https://$ORDS_HOSTNAME$1" || true; }
 apps=$(direct /apps/)
 root=$(direct /)

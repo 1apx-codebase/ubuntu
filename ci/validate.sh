@@ -144,6 +144,13 @@ sys.exit(not i.ip_address(a) <= i.ip_address(sys.argv[1]) <= i.ip_address(b))' "
 # Images are pinned by digest
 check "ORDS image pinned by tag and digest" grep -q '^ORDS_IMAGE=[^ ]*:[^ ]*@sha256:[0-9a-f]\{64\}' "$K8S/scripts/deploy-ords.sh"
 
+# Besides Cloudflare, the ORDS Service admits exactly the three nodes (each as a /32), never a
+# wider LAN range: a router that rewrites forwarded connections' source would get past one
+ranges=$(sed -n '/loadBalancerSourceRanges:/,/^  [a-zA-Z]/p' "$K8S/manifests/ords/ords.yaml" \
+  | grep -oE '[0-9]+\.[0-9.]+/[0-9]+' | sort)
+same "LAN addresses the ORDS Service admits (the nodes)" \
+  "$(awk '{print $1 "/32"}' <<<"$hosts" | sort | xargs)" "$(grep '^192\.168\.' <<<"$ranges" | xargs)"
+
 echo "== Pinned upstream manifests (k8s/config/upstream.sha256)"
 pins="$K8S/config/upstream.sha256"
 calico=$(var "$K8S/scripts/control-plane-init.sh" CALICO_VERSION)
@@ -176,10 +183,9 @@ if [ "$ONLINE" = true ]; then
     > "$work/calico-installation.yaml"
   check "Calico Installation with our pod CIDR" "$KUBECONFORM" -strict -kubernetes-version "$K8S_VERSION" \
     -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
-  # The ORDS Service admits Cloudflare's current IPv4 ranges (plus the LAN), no more, no less
+  # The ORDS Service admits Cloudflare's current IPv4 ranges (plus the nodes), no more, no less
   cf_live=$(curl -fsSL https://www.cloudflare.com/ips-v4 | grep -oE '^[0-9.]+/[0-9]+' | sort)
-  cf_repo=$(sed -n '/loadBalancerSourceRanges:/,/^  [a-zA-Z]/p' "$K8S/manifests/ords/ords.yaml" \
-    | grep -oE '[0-9]+\.[0-9.]+/[0-9]+' | grep -v '^192\.168\.1\.0/24$' | sort)
+  cf_repo=$(grep -v '^192\.168\.' <<<"$ranges" || true)
   if [ -n "$cf_live" ] && [ "$cf_live" = "$cf_repo" ]; then
     pass "ORDS Service allows exactly Cloudflare's current IPv4 ranges"
   else

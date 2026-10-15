@@ -271,12 +271,16 @@ spec:
   # MetalLB answers on the LAN IP directly, so no NodePorts need to be opened
   allocateLoadBalancerNodePorts: false
   # Who may connect to the LoadBalancer IP (enforced by kube-proxy): Cloudflare, which proxies
-  # www.1apx.com from the internet through the router's port forward, and the LAN, for
-  # testing. Anyone else who finds the public IP is refused, so Cloudflare can't be
-  # bypassed. Cloudflare's list: https://www.cloudflare.com/ips-v4 (ci/validate.sh
-  # checks this copy against it).
+  # www.1apx.com from the internet through the router's port forward, and the three nodes,
+  # for testing from k8-control. Anyone else who finds the public IP is refused, so
+  # Cloudflare can't be bypassed. Not the whole LAN: some routers rewrite a forwarded
+  # connection's source to their own LAN address, which would let anyone past this list.
+  # Cloudflare's list: https://www.cloudflare.com/ips-v4 (ci/validate.sh checks this copy
+  # against it, and the node addresses against node-prep.sh).
   loadBalancerSourceRanges:
-    - 192.168.1.0/24         # LAN
+    - 192.168.1.170/32       # k8-control
+    - 192.168.1.171/32       # k8-worker-1
+    - 192.168.1.172/32       # k8-worker-2
     - 173.245.48.0/20        # Cloudflare, from here on
     - 103.21.244.0/22
     - 103.22.200.0/22

@@ -47,7 +47,7 @@
   <text x="500.0" y="548" font-size="14" text-anchor="middle" font-style="italic" fill="#4b5563">ufw: SSH and the Kubernetes API from the LAN only</text>
   <rect x="70" y="596" width="860" height="92" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
   <text x="500.0" y="626.0" font-size="17" text-anchor="middle" font-weight="bold">Service ords · LoadBalancer · 192.168.1.180</text>
-  <text x="500.0" y="648.0" font-size="15" text-anchor="middle" fill="#4b5563">MetalLB layer 2 · admits only Cloudflare and the LAN</text>
+  <text x="500.0" y="648.0" font-size="15" text-anchor="middle" fill="#4b5563">MetalLB layer 2 · admits only Cloudflare and the nodes</text>
   <text x="500.0" y="670.0" font-size="15" text-anchor="middle" fill="#4b5563">:443 → pods 8443 (HTTPS) · :80 → 8080 (redirects to HTTPS)</text>
   <rect x="70" y="718" width="420" height="450" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
   <text x="280.0" y="748" font-size="19" text-anchor="middle" font-weight="bold">k8-worker-1</text>

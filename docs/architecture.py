@@ -196,7 +196,7 @@ text(W / 2, ctl[1] + 218, "ufw: SSH and the Kubernetes API from the LAN only", S
 # Service (MetalLB), full width
 svc = (INNER_X, 596, INNER_W, 92)
 labeled_box(*svc, ["Service ords · LoadBalancer · 192.168.1.180",
-                   "MetalLB layer 2 · admits only Cloudflare and the LAN",
+                   "MetalLB layer 2 · admits only Cloudflare and the nodes",
                    ":443 → pods 8443 (HTTPS) · :80 → 8080 (redirects to HTTPS)"],
             C["pod"], C["podline"], size=BODY, gap=22)
 
