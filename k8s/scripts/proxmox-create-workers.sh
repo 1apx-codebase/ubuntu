@@ -9,8 +9,8 @@ BRIDGE=vmbr0                      # LAN bridge (see: ip -br link)
 TEMPLATE_ID=9000
 IMAGE_URL=https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img
 IMAGE=/var/lib/vz/template/iso/ubuntu-26.04-server-cloudimg-amd64.img
-CI_USER=vaviles
-SSH_KEY_FROM=vaviles@192.168.1.170:.ssh/id_ed25519.pub   # k8-control's key, so it can manage the workers
+CI_USER=k8sadmin                  # dedicated admin account (create-admin-user.sh on k8-control)
+CONTROL_LOGIN=vaviles@192.168.1.170   # used once to fetch k8sadmin's public key
 GATEWAY=192.168.1.1
 DNS="192.168.1.1 8.8.8.8"
 DOMAIN=1apx.com
@@ -26,10 +26,11 @@ command -v qm >/dev/null || { echo "qm not found: this must run on the Proxmox h
 pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" || { echo "Storage '$STORAGE' not found (pvesm status)." >&2; exit 1; }
 ip link show "$BRIDGE" >/dev/null || { echo "Bridge '$BRIDGE' not found." >&2; exit 1; }
 
-# SSH public key that cloud-init installs for $CI_USER
+# k8sadmin's public key from k8-control, which cloud-init installs on each worker
 key=$(mktemp)
 trap 'rm -f "$key"' EXIT
-scp -q -o StrictHostKeyChecking=accept-new "$SSH_KEY_FROM" "$key"
+ssh -o StrictHostKeyChecking=accept-new "$CONTROL_LOGIN" "sudo cat /home/$CI_USER/.ssh/id_ed25519.pub" > "$key" \
+  || { echo "Run create-admin-user.sh on k8-control first." >&2; exit 1; }
 ssh-keygen -lf "$key"
 
 # Template VM from the cloud image (built once)
@@ -64,4 +65,4 @@ for w in "${WORKERS[@]}"; do
   echo "Started $name ($ip) as VM $id"
 done
 
-echo "Wait a minute for cloud-init, then from k8-control run: ssh vaviles@192.168.1.171 hostname"
+echo "Wait a minute for cloud-init, then on k8-control run: sudo -iu $CI_USER ssh 192.168.1.171 hostname"

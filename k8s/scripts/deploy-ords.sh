@@ -35,7 +35,8 @@ CERT_FILE=1apx_com.crt            # server certificate
 CHAIN_FILE=1apx_com.ca-bundle     # intermediate certificates
 KEY_FILE=1apx.key                 # private key (any format; converted to PKCS#8, which ORDS needs)
 
-HERE=$(cd "$(dirname "$0")" && pwd)
+K8S=$(cd "$(dirname "$0")/.." && pwd)   # the k8s/ folder
+MANIFESTS="$K8S/manifests/ords"
 [ "$(id -u)" -ne 0 ] || { echo "Run as vaviles, not root." >&2; exit 1; }
 ORDS_TAG=${ORDS_IMAGE##*:}
 HOST_ALIASES="[]"
@@ -112,7 +113,7 @@ write_db_config
 # 4. Preflight: log in as ORDS_PUBLIC_USER and read the ORDS and APEX versions
 #    (the first run also downloads the ORDS image, which takes a few minutes)
 kubectl delete pod ords-preflight -n "$NAMESPACE" --ignore-not-found >/dev/null
-render "$HERE/ords-preflight.yaml" | kubectl apply -f - >/dev/null
+render "$MANIFESTS/ords-preflight.yaml" | kubectl apply -f - >/dev/null
 echo "Checking the database connection..."
 for _ in $(seq 1 120); do
   phase=$(kubectl get pod ords-preflight -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
@@ -157,7 +158,7 @@ if [ "$db_ords" != "$ORDS_TAG" ]; then
   echo "Enter the SYS password for $DB_HOST:$DB_PORT/$DB_SERVICE. It's used once and then deleted."
   secret_from_value ords-db-admin ORACLE_PWD "$(ask_password 'SYS password')"
   kubectl delete job ords-install -n "$NAMESPACE" --ignore-not-found
-  render "$HERE/ords-install-job.yaml" | kubectl apply -f -
+  render "$MANIFESTS/ords-install-job.yaml" | kubectl apply -f -
   echo "Installing ORDS $ORDS_TAG in the database..."
   if ! kubectl wait --for=condition=complete job/ords-install -n "$NAMESPACE" --timeout=30m; then
     kubectl logs job/ords-install -n "$NAMESPACE" --tail=50 || true
@@ -171,9 +172,9 @@ if [ "$db_ords" != "$ORDS_TAG" ]; then
 fi
 
 # 7. ORDS settings and deployment
-kubectl create configmap ords-settings -n "$NAMESPACE" --from-file="$HERE/ords-settings.conf" \
+kubectl create configmap ords-settings -n "$NAMESPACE" --from-file="$K8S/config/ords-settings.conf" \
   --dry-run=client -o yaml | kubectl apply -f -
-render "$HERE/ords.yaml" | kubectl apply -f -
+render "$MANIFESTS/ords.yaml" | kubectl apply -f -
 kubectl rollout restart deployment/ords -n "$NAMESPACE"   # pick up changed settings or certificate
 kubectl rollout status deployment/ords -n "$NAMESPACE" --timeout=20m
 kubectl get pods,svc -n "$NAMESPACE" -o wide

@@ -37,7 +37,15 @@ This removes the sudo rule and restores the original DHCP config.
 ## Kubernetes cluster for Oracle ORDS
 
 How to build a three-node Kubernetes cluster on Proxmox, with k8-control as the control plane and two worker VMs, and run Oracle REST Data Services (ORDS) on it, connected to an existing Oracle database.
-The cluster is built with `kubeadm`, the upstream Kubernetes installer. Each step is a script in [`k8s/`](k8s/), and every script is safe to re-run.
+The cluster is built with `kubeadm`, the upstream Kubernetes installer. Every script is safe to re-run.
+
+Files in [`k8s/`](k8s/) are kept apart by type, so a change to a manifest or setting never means editing a script:
+
+| Folder | Contents |
+|--------|----------|
+| [`k8s/scripts/`](k8s/scripts/) | Shell scripts, one per step, which you run |
+| [`k8s/manifests/`](k8s/manifests/) | Kubernetes and kubeadm YAML, which the scripts apply. [`manifests/ords/`](k8s/manifests/ords/) holds the ORDS ones |
+| [`k8s/config/`](k8s/config/) | Application settings. [`ords-settings.conf`](k8s/config/ords-settings.conf) holds the ORDS settings |
 
 ### Cluster design
 
@@ -69,83 +77,155 @@ Two workers let ORDS keep running while one is down or being upgraded. For prote
 
 All versions are pinned in the scripts, so every node gets exactly the same software.
 
+### Accounts
+
+| Account | Where | Used for |
+|---------|-------|----------|
+| `k8sadmin` | All three nodes | Dedicated cluster admin account. The scripts use it to log in to the workers. It has no password (SSH key only) and passwordless sudo |
+| `vaviles` | k8-control | Your personal login. It runs `kubectl`, the add-on and ORDS scripts, and git |
+
+A dedicated account is the better practice. The cluster doesn't depend on a personal login, and its SSH key is separate from personal keys such as `vaviles`'s GitHub key. On the workers, cloud-init creates only `k8sadmin`. To reach a worker, run `sudo -iu k8sadmin` on k8-control, then `ssh k8-worker-1`.
+
+### DNS
+
+Every node uses the same DNS servers as k8-control: **`192.168.1.1`** (the router) first, then **`8.8.8.8`** (Google).
+
+| Node | Where it's set |
+|------|----------------|
+| k8-control | `/etc/netplan/00-installer-config.yaml` (see the top of this README) |
+| Workers | cloud-init, from `proxmox-create-workers.sh` (`--nameserver "192.168.1.1 8.8.8.8"`, search domain `1apx.com`) |
+
+`node-prep.sh` warns if a node is missing either server. Kubernetes uses them too: kubeadm points kubelet at `/run/systemd/resolve/resolv.conf`, which lists the real servers rather than the local `127.0.0.53` stub. Pods resolve outside names through CoreDNS, which forwards to those servers.
+
+**Caveat with two DNS servers.** Ubuntu's resolver asks one server and only switches when it fails. `8.8.8.8` only knows the public `1apx.com` zone on Cloudflare. So a record that exists only on the router, such as `ords.1apx.com`, can stop resolving whenever the node has switched to `8.8.8.8`. To avoid this, either put the records in Cloudflare (they would be public, though the addresses are private), or remove `8.8.8.8` from the nodes. The node names don't depend on DNS, because the scripts write them to `/etc/hosts`. The database name doesn't either if you set `DB_HOST_IP`.
+
+### Kernel settings
+
+`node-prep.sh` applies these on every node, now and at every boot.
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| Module `overlay` | loaded (`/etc/modules-load.d/k8s.conf`) | Filesystem containerd uses for container images |
+| Module `br_netfilter` | loaded (same file) | Lets iptables see traffic crossing Linux bridges |
+| `net.ipv4.ip_forward` | `1` (`/etc/sysctl.d/99-kubernetes.conf`) | Routes packets between pods, nodes and the LAN. Kubernetes doesn't work without it |
+| `net.bridge.bridge-nf-call-iptables` | `1` | Sends bridged pod traffic through iptables, so services and network policies apply |
+| `net.bridge.bridge-nf-call-ip6tables` | `1` | The same for IPv6 |
+| `fs.inotify.max_user_watches` | `524288` | Ubuntu's default (about 60,000 on k8-control) runs out with many containers |
+| `fs.inotify.max_user_instances` | `512` | The default is 128 |
+| Swap | off (`swapoff -a`, commented out in `/etc/fstab`) | kubelet won't start with swap on by default |
+
+Checked on k8-control before the change: `ip_forward` was `0`, the two modules weren't loaded, ufw was installed but inactive, and the inotify limits were the defaults (59,452 and 128). Reverse-path filtering stays at Ubuntu's default (loose), which Calico expects.
+
+### Firewall
+
+`node-prep.sh` turns on ufw on every node. It denies incoming traffic by default and opens only what the cluster needs. Set `ENABLE_FIREWALL=false` in the script to leave ufw alone.
+
+| Port | Protocol | From | Nodes | Purpose |
+|------|----------|------|-------|---------|
+| 22 | TCP | LAN `192.168.1.0/24` | All | SSH |
+| 6443 | TCP | LAN | Control plane | Kubernetes API (nodes, `kubectl`) |
+| 10250 | TCP | Other nodes | All | kubelet API (logs, exec, metrics) |
+| 4789 | UDP | Other nodes | All | Calico VXLAN (pod traffic between nodes) |
+| 179 | TCP | Other nodes | All | Calico BGP |
+| 5473 | TCP | Other nodes | All | Calico Typha |
+| 7946 | TCP and UDP | Other nodes | All | MetalLB node coordination |
+| 30000–32767 | TCP | LAN | Workers | NodePort services (ORDS doesn't use them) |
+| all | all | Pods `10.244.0.0/16` | All | Pods reaching their node (API server, DNS, kubelet) |
+
+Things to know:
+
+- **ufw's forward policy** is changed from `DROP` to `ACCEPT` in `/etc/default/ufw`. Kubernetes sends service traffic, including ORDS on `192.168.1.180:443`, through the kernel's FORWARD chain, so ufw's default would silently break it. Because of this, ORDS's ports 80 and 443 need no rule.
+- **Not opened:** etcd (2379–2380), the scheduler (10259) and the controller manager (10257). They listen only on k8-control itself.
+- **Use the console when enabling it.** SSH from the LAN is allowed before ufw is turned on, but if anything goes wrong, use the Proxmox console.
+- **When troubleshooting:** if pods can't reach each other or a service, run `sudo ufw disable` on the nodes for a moment. If that fixes it, a rule is missing. Check with `sudo ufw status numbered`.
+
 ### Before you start
 
-- **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 6). The workers must be able to reach port 1521 on the database server.
-- **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 6 checks both and tells you if anything needs changing.
-- **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.p12` and `*.jks` file, out of git. Step 6 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
+- **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 7). The workers must be able to reach port 1521 on the database server.
+- **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 7 checks both and tells you if anything needs changing.
+- **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.p12` and `*.jks` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool. All of them answered no ping when this was written.
 - **DNS records.** None of the cluster names resolve today: `1apx.com` is on Cloudflare, but `k8-control`, the workers, `node.1apx.com` and `ords.1apx.com` have no records. You need:
-  - `ords.1apx.com` → `192.168.1.180`, the name users and browsers will use for ORDS. Put it on your LAN DNS server (the router), or in Cloudflare if you don't mind the private address being public.
+  - `ords.1apx.com` → `192.168.1.180`, the name users and browsers will use for ORDS (see the caveat under [DNS](#dns)).
   - `node.1apx.com` → the database server's IP. Or set `DB_HOST_IP` in `deploy-ords.sh`, which maps the name for the ORDS pods only.
   - Optionally, the three nodes. The scripts add them to `/etc/hosts` on every node anyway.
 - **Proxmox details.** Check the VM storage name with `pvesm status` and the LAN bridge with `ip -br link` on the Proxmox host. The script assumes `local-lvm` and `vmbr0`, and needs Proxmox VE 7.2 or later.
-- **Password SSH to k8-control.** The VM script copies k8-control's public key with `scp`, so the Proxmox host must be able to log in to `vaviles@192.168.1.170` with a password once.
+- **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `vaviles@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
 
-### Step 1: Create the worker VMs (on the Proxmox host)
+In the steps below, run commands from the repo folder on k8-control, `/home/vaviles/codebase/github/ubuntu`.
 
-Script: [`k8s/proxmox-create-workers.sh`](k8s/proxmox-create-workers.sh). Copy it to the Proxmox host (for example with `scp` from k8-control) and run it there as root.
+### Step 1: Create the admin account (on k8-control)
 
-It downloads the Ubuntu 26.04 cloud image and makes a template VM (ID 9000) from it. Then it creates full clones as VM 211 (`k8-worker-1`) and VM 212 (`k8-worker-2`), each with:
+Script: [`k8s/scripts/create-admin-user.sh`](k8s/scripts/create-admin-user.sh). Run `sudo k8s/scripts/create-admin-user.sh`.
+
+It creates `k8sadmin` with a locked password (SSH key login only), adds it to the `sudo` group, and gives it passwordless sudo through `/etc/sudoers.d/k8sadmin`, which `visudo` checks first. It also generates the account's own SSH key, `~k8sadmin/.ssh/id_ed25519`, which the next step installs on the workers.
+
+### Step 2: Create the worker VMs (on the Proxmox host)
+
+Script: [`k8s/scripts/proxmox-create-workers.sh`](k8s/scripts/proxmox-create-workers.sh). Copy it to the Proxmox host (for example with `scp` from k8-control) and run it there as root.
+
+It fetches `k8sadmin`'s public key from k8-control, downloads the Ubuntu 26.04 cloud image and makes a template VM (ID 9000) from it. Then it creates full clones as VM 211 (`k8-worker-1`) and VM 212 (`k8-worker-2`), each with:
 
 - 4 cores (CPU type `host`), 8 GB RAM with ballooning off, and a 60 GB disk. Kubernetes schedules by memory, so memory that can shrink causes problems.
-- A static IP, gateway, DNS servers `192.168.1.1` and `8.8.8.8`, and search domain `1apx.com`, all set through cloud-init. This matches what was done on k8-control.
-- User `vaviles` with k8-control's SSH key and passwordless sudo, so k8-control can manage the workers.
+- A static IP, gateway `192.168.1.1`, DNS servers `192.168.1.1` and `8.8.8.8`, and search domain `1apx.com`, all set through cloud-init. This matches k8-control.
+- The `k8sadmin` account with that SSH key and passwordless sudo. Cloud images don't allow SSH password logins.
 - The QEMU guest agent enabled, and the VM set to start when the Proxmox host boots.
 
 The script stops if a worker's IP already answers ping. Cloud images are used instead of cloning k8-control, because a clone would copy its machine ID, SSH host keys and static IP.
 
-Check: after a minute, `ssh vaviles@192.168.1.171 hostname` from k8-control prints `k8-worker-1`.
+Check: after a minute, on k8-control, `sudo -iu k8sadmin ssh 192.168.1.171 hostname` prints `k8-worker-1`.
 
-### Step 2: Prepare k8-control
+### Step 3: Prepare k8-control
 
-Script: [`k8s/node-prep.sh`](k8s/node-prep.sh). On k8-control, run `sudo k8s/node-prep.sh`. Step 4 runs the same script on the workers for you.
+Script: [`k8s/scripts/node-prep.sh`](k8s/scripts/node-prep.sh). Run `sudo k8s/scripts/node-prep.sh` from the **Proxmox console**, because it turns on the firewall. Step 5 runs the same script on the workers for you.
 
 It does what every Kubernetes node needs:
 
 1. Adds the three nodes to `/etc/hosts`.
-2. Turns swap off and comments it out of `/etc/fstab`. k8-control has a 4 GB swap file, and kubelet won't start with swap on by default.
-3. Loads the `overlay` and `br_netfilter` kernel modules and enables IP forwarding and bridged traffic filtering.
-4. Installs containerd and sets it to systemd cgroups (the same as kubelet). It also sets containerd's pause image to the one kubeadm expects, `pause:3.10.2`; containerd's default is `3.10.1`.
-5. Installs `kubelet`, `kubeadm` and `kubectl` 1.36.5 from `pkgs.k8s.io`, and holds them so `apt upgrade` can't change them.
-6. Makes kubelet use the node's LAN IP, not the `127.0.1.1` entry Ubuntu puts in `/etc/hosts`.
+2. Checks that the DNS servers are `192.168.1.1` and `8.8.8.8` (see [DNS](#dns)).
+3. Turns swap off. k8-control has a 4 GB swap file.
+4. Loads the kernel modules and applies the kernel settings (see [Kernel settings](#kernel-settings)).
+5. Installs containerd and sets it to systemd cgroups (the same as kubelet). It also sets containerd's pause image to the one kubeadm expects, `pause:3.10.2`; containerd's default is `3.10.1`.
+6. Installs `kubelet`, `kubeadm` and `kubectl` 1.36.5 from `pkgs.k8s.io`, and holds them so `apt upgrade` can't change them.
+7. Makes kubelet use the node's LAN IP, not the `127.0.1.1` entry Ubuntu puts in `/etc/hosts`.
+8. Turns on the firewall (see [Firewall](#firewall)).
 
-It ends with a summary. Check that swap shows 0 and that the machine ID is different on every node.
+It ends with a summary. Check that swap shows 0, both modules are listed, `ip_forward` is 1, the firewall is active, and the machine ID is different on every node.
 
-### Step 3: Create the control plane
+### Step 4: Create the control plane
 
-Script: [`k8s/control-plane-init.sh`](k8s/control-plane-init.sh), which uses [`k8s/kubeadm-config.yaml`](k8s/kubeadm-config.yaml). On k8-control, run `sudo k8s/control-plane-init.sh`.
+Script: [`k8s/scripts/control-plane-init.sh`](k8s/scripts/control-plane-init.sh), which uses [`k8s/manifests/kubeadm-config.yaml`](k8s/manifests/kubeadm-config.yaml). Run `sudo k8s/scripts/control-plane-init.sh`.
 
 1. Checks the kubeadm config, pulls the control-plane images and runs `kubeadm init`.
    The API server is reached as `k8-control.1apx.com:6443`, a name rather than an IP, so more control-plane nodes can be added later without rebuilding.
-2. Copies the admin kubeconfig to `~vaviles/.kube/config`, so `kubectl` works as `vaviles`.
+2. Copies the admin kubeconfig to `~/.kube/config` for `vaviles` and `k8sadmin`, so `kubectl` works for both.
 3. Installs Calico with the pod network set to `10.244.0.0/16`, and waits until the node is `Ready`.
 
 The control plane keeps its default taint, so ORDS and other workloads only run on the workers.
 
-### Step 4: Join the workers
+### Step 5: Join the workers
 
-Script: [`k8s/join-workers.sh`](k8s/join-workers.sh). On k8-control, run `k8s/join-workers.sh` as `vaviles`, without sudo.
+Script: [`k8s/scripts/join-workers.sh`](k8s/scripts/join-workers.sh). Run `sudo k8s/scripts/join-workers.sh`.
 
-For each worker, it connects over SSH and runs `node-prep.sh` there. Then it creates a single-use join token that expires after 30 minutes and runs `kubeadm join` on the worker. Finally it waits for both workers to be `Ready` and labels them as workers.
+For each worker, it logs in as `k8sadmin` with that account's key and runs `node-prep.sh` there, including the firewall. Then it creates a single-use join token that expires after 30 minutes and runs `kubeadm join` on the worker. Finally it waits for both workers to be `Ready` and labels them as workers.
 
 The first SSH connection to each worker saves its host key. If you want to check it, compare it with the key shown on the VM's Proxmox console.
 
 Check: `kubectl get nodes -o wide` lists all three nodes as `Ready` with their `192.168.1.x` addresses.
 
-### Step 5: Install the add-ons
+### Step 6: Install the add-ons
 
-Script: [`k8s/cluster-addons.sh`](k8s/cluster-addons.sh). On k8-control, run `k8s/cluster-addons.sh` as `vaviles`.
+Script: [`k8s/scripts/cluster-addons.sh`](k8s/scripts/cluster-addons.sh). Run `k8s/scripts/cluster-addons.sh` as `vaviles`.
 
 - **MetalLB** in layer-2 mode, with the pool `192.168.1.180`–`192.168.1.189`. A `LoadBalancer` service gets one of these LAN IPs, and the worker running it answers ARP for it.
 - **metrics-server**, so `kubectl top nodes` and `kubectl top pods` work. It skips verifying kubelets' self-signed serving certificates, which is the usual setting for kubeadm clusters.
 
-### Step 6: Deploy ORDS
+### Step 7: Deploy ORDS
 
-Script: [`k8s/ords/deploy-ords.sh`](k8s/ords/deploy-ords.sh). It uses [`k8s/ords/ords-settings.conf`](k8s/ords/ords-settings.conf), [`k8s/ords/ords.yaml`](k8s/ords/ords.yaml), [`k8s/ords/ords-preflight.yaml`](k8s/ords/ords-preflight.yaml) and [`k8s/ords/ords-install-job.yaml`](k8s/ords/ords-install-job.yaml).
-Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. Then, on k8-control, run `k8s/ords/deploy-ords.sh` as `vaviles`.
+Script: [`k8s/scripts/deploy-ords.sh`](k8s/scripts/deploy-ords.sh). It uses the settings in [`k8s/config/ords-settings.conf`](k8s/config/ords-settings.conf) and the manifests [`ords.yaml`](k8s/manifests/ords/ords.yaml), [`ords-preflight.yaml`](k8s/manifests/ords/ords-preflight.yaml) and [`ords-install-job.yaml`](k8s/manifests/ords/ords-install-job.yaml) in `k8s/manifests/ords/`.
+Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. Then run `k8s/scripts/deploy-ords.sh` as `vaviles`.
 
-**ORDS settings.** `ords-settings.conf` holds your existing server's `settings.xml` and `pool.xml` settings, one `key value` per line. Every pod applies them when it starts. Changes from the old server:
+**ORDS settings.** `k8s/config/ords-settings.conf` holds your existing server's `settings.xml` and `pool.xml` settings, one `key value` per line. Every pod applies them when it starts. Changes from the old server:
 
 - **Same:** context path `/apps`, APEX static files at `/i`, `plsql.gateway.mode direct` with `ords_util.authorize_plsql_gateway`, `misc.defaultPage apex`, `security.forceHTTPS true`, `database.api.enabled true`, Database Actions and REST-enabled SQL off, and all the `jdbc.*` timeouts and limits.
 - **Halved:** the connection pool, because there are now two ORDS pods. Each pod gets `InitialLimit 15`, `MinLimit 25` and `MaxLimit 150`, which add up to the old server's 30 / 50 / 300. Raise them if one pod has to carry all the traffic.
@@ -173,7 +253,7 @@ ORDS is then at **`https://ords.1apx.com/apps/`**, with APEX at `https://ords.1a
 
 To change a setting, edit `ords-settings.conf` and run the script again. It replaces the pods one at a time.
 
-### Step 7: Check the cluster
+### Step 8: Check the cluster
 
 On k8-control, as `vaviles`:
 
@@ -186,7 +266,7 @@ On k8-control, as `vaviles`:
 
 ### Running the cluster
 
-- **Backups.** Script: [`k8s/etcd-backup.sh`](k8s/etcd-backup.sh). Run `sudo k8s/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. Schedule it daily with cron (the script's header shows the line). Copy the backups off the VM, because they contain the cluster's private keys. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
+- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. Schedule it daily with cron (the script's header shows the line). Copy the backups off the VM, because they contain the cluster's private keys. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
 - **Certificates** that kubeadm creates expire after one year, and upgrading the control plane renews them. Check them with `sudo kubeadm certs check-expiration`.
 - **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets` first; the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh` and the version in `kubeadm-config.yaml`, and upgrade Calico when its tested versions require it.
 - **OS updates.** `apt upgrade` is safe because the Kubernetes packages are held. Reboot one node at a time, draining workers first.

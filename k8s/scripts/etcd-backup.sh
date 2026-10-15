@@ -2,7 +2,7 @@
 # Back up the cluster state: an etcd snapshot plus the control plane's certificates and config.
 # Run on k8-control as root: sudo ./etcd-backup.sh
 # Schedule it daily, e.g. /etc/cron.d/etcd-backup:
-#   30 2 * * * root /home/vaviles/codebase/github/ubuntu/k8s/etcd-backup.sh
+#   30 2 * * * root /home/vaviles/codebase/github/ubuntu/k8s/scripts/etcd-backup.sh
 set -euo pipefail
 
 BACKUP_DIR=/var/backups/kubernetes

@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
 # Prepare each worker over SSH and join it to the cluster.
-# Run on k8-control as vaviles (not root): ./join-workers.sh
+# Run on k8-control as root: sudo ./join-workers.sh
+# It logs in to the workers as k8sadmin, with k8sadmin's key.
 # Safe to re-run: a worker that has already joined is only re-prepared.
 set -euo pipefail
 
 WORKERS=(k8-worker-1 k8-worker-2)
-SSH_USER=vaviles
+SSH_USER=k8sadmin
+SSH_KEY=/home/$SSH_USER/.ssh/id_ed25519
+export KUBECONFIG=/etc/kubernetes/admin.conf
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-[ "$(id -u)" -ne 0 ] || { echo "Run as $SSH_USER, not root (it uses your SSH key)." >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
+[ -f "$SSH_KEY" ] || { echo "Run create-admin-user.sh first." >&2; exit 1; }
+# First connection to a worker records its host key; check it on the Proxmox console if in doubt
+rssh() { ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$SSH_USER@$1" "${@:2}"; }
 kubectl get node k8-control >/dev/null || { echo "Run control-plane-init.sh first." >&2; exit 1; }
 
 for w in "${WORKERS[@]}"; do
   echo "=== $w"
-  # First connection records the worker's host key; check it on the Proxmox console if in doubt
-  ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$SSH_USER@$w" true
-  ssh "$SSH_USER@$w" "sudo bash -s" < "$HERE/node-prep.sh"
+  rssh "$w" true
+  rssh "$w" "sudo bash -s" < "$HERE/node-prep.sh"
 
   if kubectl get node "$w" >/dev/null 2>&1; then
     echo "$w is already in the cluster"
     continue
   fi
   # Short-lived token, used once
-  join=$(sudo kubeadm token create --ttl 30m --print-join-command)
-  ssh "$SSH_USER@$w" "sudo $join"
+  join=$(kubeadm token create --ttl 30m --print-join-command)
+  rssh "$w" "sudo $join"
 done
 
 echo "Waiting for all nodes to be Ready..."

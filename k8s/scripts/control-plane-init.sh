@@ -6,9 +6,9 @@ set -euo pipefail
 
 CALICO_VERSION=v3.32.2
 POD_CIDR=10.244.0.0/16            # must match podSubnet in kubeadm-config.yaml
-ADMIN_USER=vaviles                # gets a kubeconfig in ~/.kube/config
-HERE=$(cd "$(dirname "$0")" && pwd)
-CONFIG="$HERE/kubeadm-config.yaml"
+KUBECONFIG_USERS="vaviles k8sadmin"   # each gets the admin kubeconfig in ~/.kube/config
+K8S=$(cd "$(dirname "$0")/.." && pwd)   # the k8s/ folder
+CONFIG="$K8S/manifests/kubeadm-config.yaml"
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
 [ "$(hostname -s)" = k8-control ] || { echo "Run this on k8-control." >&2; exit 1; }
@@ -23,10 +23,13 @@ else
   echo "Control plane already initialized, skipping kubeadm init"
 fi
 
-# 2. kubectl access for the admin user
-home=$(getent passwd "$ADMIN_USER" | cut -d: -f6)
-install -d -o "$ADMIN_USER" -g "$ADMIN_USER" -m 0700 "$home/.kube"
-install -o "$ADMIN_USER" -g "$ADMIN_USER" -m 0600 /etc/kubernetes/admin.conf "$home/.kube/config"
+# 2. kubectl access for the admin users
+for u in $KUBECONFIG_USERS; do
+  id "$u" >/dev/null 2>&1 || { echo "User $u doesn't exist, skipping its kubeconfig"; continue; }
+  home=$(getent passwd "$u" | cut -d: -f6)
+  install -d -o "$u" -g "$u" -m 0700 "$home/.kube"
+  install -o "$u" -g "$u" -m 0600 /etc/kubernetes/admin.conf "$home/.kube/config"
+done
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
 # 3. Calico pod network, using our pod CIDR instead of Calico's 192.168.0.0/16 default (overlaps the LAN)
@@ -48,4 +51,4 @@ kubectl rollout status daemonset/calico-node -n calico-system --timeout=600s
 kubectl wait --for=condition=Ready node/k8-control --timeout=300s
 kubectl get nodes -o wide
 kubectl get pods -A
-echo "Control plane is ready. Next: ./join-workers.sh as $ADMIN_USER."
+echo "Control plane is ready. Next: sudo ./join-workers.sh"
