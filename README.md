@@ -292,6 +292,8 @@ On k8-control, as `vaviles`:
 - **Single control plane.** If k8-control is down, running ORDS pods keep serving, but you can't change the cluster until it's back. For high availability, add two more control-plane nodes behind `k8-control.1apx.com` (kubeadm supports this because the endpoint is a name), and restore from the etcd backups if needed.
 - **Starting over on a node.** `sudo kubeadm reset` removes Kubernetes state from a node. On the control plane, that deletes the cluster.
 
+For the security measures in place, day-to-day commands and a troubleshooting guide for ORDS, see [Appendix B](#appendix-b-ords-on-kubernetes-security-operations-and-troubleshooting).
+
 ## Validation and CI
 
 [`ci/validate.sh`](ci/validate.sh) checks the whole repo. Run it before every commit, as `vaviles`: `ci/validate.sh`, or `ci/validate.sh --offline` without internet access. It exits non-zero if any check fails. GitHub Actions runs it on every push and pull request ([`.github/workflows/validate.yml`](.github/workflows/validate.yml)).
@@ -374,3 +376,166 @@ Notes:
 - **Restart Claude Code after the change.** If the setting changes while a session is running, the screen can go blank. Press Ctrl+L to redraw, or exit and run `sudo claude` again, then use `/resume` to continue the conversation.
 - **Settings are per user.** `sudo claude` reads `/root/.claude/settings.json`, and `claude` as `vaviles` reads `/home/vaviles/.claude/settings.json`, so both need the setting. To cover another user, add them to `TARGETS` at the top of the script.
 - **Without this fix**, you can still copy in the fullscreen interface by holding a key while you drag: Shift in most Linux and Windows terminals and PuTTY, Option in iTerm2, Fn in macOS Terminal.app.
+
+## Appendix B: ORDS on Kubernetes: security, operations and troubleshooting
+
+Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the `ords` namespace, so most commands need `-n ords`.
+
+### B.1 Security practices applied
+
+**Nodes**
+
+| Practice | Where |
+|----------|-------|
+| A dedicated admin account, `k8sadmin`, with SSH key login only (no password), separate from personal accounts | `create-admin-user.sh`, `proxmox-create-workers.sh` |
+| Host firewall (ufw) denies incoming traffic by default and opens only the cluster's ports, each to the nodes or the LAN that need it. etcd, the scheduler and the controller manager aren't reachable from the network | `node-prep.sh` (see [Firewall](#firewall)) |
+| Worker VMs come from Ubuntu's cloud image, checked against Ubuntu's published SHA-256, with their own machine ID and SSH host keys | `proxmox-create-workers.sh` |
+| Kubernetes packages pinned to one version and held, so `apt upgrade` can't change them | `node-prep.sh` |
+| Join tokens expire after 30 minutes and are deleted as soon as the worker has joined | `join-workers.sh` |
+
+**Cluster**
+
+| Practice | Where |
+|----------|-------|
+| Secrets are encrypted at rest in etcd (secretbox), so database passwords and the TLS key aren't readable in etcd or its backups. The key is generated on k8-control and never stored in git | `control-plane-init.sh`, `kubeadm-config.yaml` |
+| API audit log of every change, kept 30 days. Secrets and ConfigMaps are logged as "who did what", never with their contents | `audit-policy.yaml` |
+| kubeadm's defaults: RBAC, TLS between every component, and an admin kubeconfig bound to the `kubeadm:cluster-admins` group rather than the unrevokable `system:masters` | `kubeadm init` |
+| The control plane keeps its taint, so ORDS never runs next to etcd and the API server | `kubeadm-config.yaml` |
+| Every upstream manifest (Calico, MetalLB, metrics-server) is checked against a SHA-256 pinned in the repo before it's applied | `common.sh`, `k8s/config/upstream.sha256` |
+| etcd backups are root-only (`0700` folder, `0600` files), and cron runs a root-owned copy of the script, not the one in a user's home | `etcd-backup.sh` |
+
+**ORDS namespace and network**
+
+| Practice | Where |
+|----------|-------|
+| Its own namespace, `ords`, so its network policy, Secrets and permissions apply to ORDS alone | `namespace.yaml` |
+| A NetworkPolicy blocks everything not listed. In: only ORDS's ports 8443 and 8080. Out: only DNS (CoreDNS), the database port and HTTPS | `network-policy.yaml` |
+| The Service allocates no NodePorts; ORDS is reachable only on its MetalLB address, `192.168.1.180` | `ords.yaml` |
+| HTTPS only: HTTP answers with a redirect to HTTPS (`security.forceHTTPS`), with the full certificate chain served | `ords-settings.conf`, `deploy-ords.sh` |
+
+**ORDS pods**
+
+| Practice | Where |
+|----------|-------|
+| Every container runs as the image's `oracle` user (UID 54321), never root, with no Linux capabilities, no privilege escalation, and the default seccomp profile | `ords.yaml` |
+| No Kubernetes API token in the pods (`automountServiceAccountToken: false`); ORDS never talks to the API | `ords.yaml`, `ords-preflight.yaml`, `ords-install-job.yaml` |
+| Memory limits on every container, so a leak can't take a worker down | same |
+| Image pinned by digest, so it can't change even if Oracle re-publishes the tag | `deploy-ords.sh` |
+| ORDS is started directly (`ords serve`), because the image's entrypoint would switch Database Actions, REST-enabled SQL and the MongoDB API back on. All three stay off | `ords.yaml`, `ords-settings.conf` |
+| PL/SQL gateway calls go through `ords_util.authorize_plsql_gateway`, which allows only procedures that are explicitly permitted | `ords-settings.conf` |
+
+**Secrets handling**
+
+| Practice | Where |
+|----------|-------|
+| Passwords are typed at a prompt that doesn't echo them, never passed on a command line, and only briefly written to a private (`0700`) temporary folder | `deploy-ords.sh` |
+| The SYS password is used only by the one-time install Job and deleted from the cluster right after, even if the script fails or is interrupted. The ORDS pods never see it | `deploy-ords.sh` |
+| The `ORDS_PUBLIC_USER` password Secret is mounted only into the init container that writes ORDS's config, where it goes into ORDS's encrypted wallet. The ORDS container itself never mounts it | `ords.yaml` |
+| The TLS key is readable only by the pod's group (`0440`) | `ords.yaml` |
+| No keys, certificates, kubeconfigs or passwords in git: `.gitignore` excludes them and gitleaks scans the whole history on every push | `.gitignore`, `ci/validate.sh` |
+
+**Known gaps (accepted or still open)**
+
+| Gap | Why, and what would close it |
+|-----|------------------------------|
+| **Traffic to the database isn't encrypted** unless the database requires it. ORDS connects to `node.1apx.com:1521` over plain TCP | Turn on Oracle Native Network Encryption on the database server (`SQLNET.ENCRYPTION_SERVER = required` in its `sqlnet.ora`), or use a TCPS listener. ORDS needs no change for the first |
+| No Pod Security level is enforced on the namespace | The APEX images cache is a host folder (`hostPath`), which both enforceable levels forbid. The pods otherwise meet the strictest level, `restricted` |
+| HTTPS out of the namespace is allowed to any address | Needed for the APEX images download from `download.oracle.com`, whose addresses change |
+| metrics-server doesn't verify kubelets' certificates | The usual kubeadm setting. Verifying them means approving kubelet certificates by hand every year |
+| `vaviles` and `k8sadmin` have passwordless sudo | Chosen for automation (see the top of this README) |
+| One control-plane node | See [Running the cluster](#running-the-cluster) |
+
+### B.2 Day-to-day operations
+
+**Check health**
+
+| Task | Command |
+|------|---------|
+| Pods, which worker each is on, and readiness | `kubectl get pods -n ords -o wide` |
+| Service and its LAN IP | `kubectl get svc -n ords` |
+| CPU and memory use | `kubectl top pods -n ords` |
+| Recent events (scheduling, probes, restarts) | `kubectl get events -n ords --sort-by=.lastTimestamp` |
+| From a client | `curl -sI https://ords.1apx.com/apps/` returns `302` |
+
+**Logs**
+
+| Task | Command |
+|------|---------|
+| ORDS log of one pod | `kubectl logs -n ords <pod>` (or `deploy/ords` for any one pod) |
+| Follow both pods | `kubectl logs -n ords -l app=ords -f --prefix` |
+| A pod's previous run, after a restart | `kubectl logs -n ords <pod> --previous` |
+| Startup steps (APEX download, config) | `kubectl logs -n ords <pod> -c apex-images` and `-c config` |
+| Who changed what in the namespace | `sudo jq -r 'select(.objectRef.namespace=="ords" and .verb!="get" and .verb!="list" and .verb!="watch") \| [.requestReceivedTimestamp, .user.username, .verb, .objectRef.resource, .objectRef.name] \| @tsv' /var/log/kubernetes/audit/audit.log \| tail -20` |
+
+**Change things**
+
+| Task | How |
+|------|-----|
+| Change an ORDS setting | Edit `k8s/config/ords-settings.conf`, run `ci/validate.sh`, commit, then run `k8s/scripts/deploy-ords.sh`. The pods are replaced one at a time, and only if something changed |
+| Restart ORDS (no change) | `kubectl rollout restart deployment/ords -n ords`, then `kubectl rollout status deployment/ords -n ords` |
+| Undo the last rollout | `kubectl rollout undo deployment/ords -n ords` |
+| See the settings a pod is running with | `kubectl exec -n ords deploy/ords -- ords --config /etc/ords/config config list` |
+| Change the `ORDS_PUBLIC_USER` password | Change it in the database, then `kubectl delete secret ords-db-runtime -n ords` and run `deploy-ords.sh`, which asks for the new one. Update the old ORDS server too |
+| Renew the certificate | Put the new files in `ssl/` with the same names and run `deploy-ords.sh`. Check the expiry date in use with `kubectl get secret ords-tls -n ords -o jsonpath='{.data.tls\.crt}' \| base64 -d \| openssl x509 -noout -enddate` |
+| Upgrade ORDS | See "ORDS upgrades" under [Running the cluster](#running-the-cluster). Tag and digest both change |
+| New APEX version in the database | Run `deploy-ords.sh`. It finds the new version, and each worker downloads its images on the next pod start. Remove the old version's folder from `/var/cache/ords-apex/` on each worker afterwards |
+| More replicas | Set `replicas` in `ords.yaml` and run `deploy-ords.sh` (not `kubectl scale`, which the next deploy would undo). Each pod opens up to `jdbc.MaxLimit` (150) database connections, so check the database's session limit first |
+
+**Maintenance**
+
+| Task | How |
+|------|-----|
+| Take a worker down (patching, reboot) | `kubectl drain k8-worker-1 --ignore-daemonsets --delete-emptydir-data`, do the work, then `kubectl uncordon k8-worker-1`. The PodDisruptionBudget keeps one ORDS pod running, and the other worker takes both while this one is out. Then `kubectl rollout restart deployment/ords -n ords` to spread them again |
+| Back up the cluster | `sudo k8s/scripts/etcd-backup.sh`, or check that the daily cron ran: `sudo ls -lt /var/backups/kubernetes \| head` |
+| Cluster certificates | `sudo kubeadm certs check-expiration` once a month. They expire after a year unless the control plane is upgraded |
+| Before any commit | `ci/validate.sh` |
+
+### B.3 Troubleshooting
+
+Start with `kubectl get pods -n ords -o wide` and `kubectl describe pod -n ords <pod>`. The `Events` at the bottom of `describe` usually name the problem.
+
+**Pods don't start**
+
+| Symptom | Likely cause | Check and fix |
+|---------|--------------|---------------|
+| `Pending` | Not enough CPU or memory on the workers, or both workers unschedulable | `describe` shows `Insufficient memory` or `node(s) were unschedulable`. Free up resources, or `kubectl uncordon` the worker |
+| `ContainerCreating` for minutes, event `hostPath type check failed: /var/cache/ords-apex is not a directory` | The worker wasn't prepared with the current `node-prep.sh` | Run `sudo k8s/scripts/join-workers.sh`, which re-runs `node-prep.sh` on the workers |
+| `ErrImagePull` or `ImagePullBackOff` | The worker can't reach `container-registry.oracle.com`, or the tag and digest in `ORDS_IMAGE` don't match | `describe` shows the registry's error. From the worker: `curl -sI https://container-registry.oracle.com`. Check the digest belongs to the tag |
+| `Init:Error` or `Init:CrashLoopBackOff` | The APEX download or the config step failed | `kubectl logs -n ords <pod> -c apex-images` (download blocked, or no `apex_<version>.zip`), and `-c config` (often a misspelt key in `ords-settings.conf`) |
+| `CrashLoopBackOff`, `describe` shows `Last State: OOMKilled` | ORDS needs more memory than its 3 GiB limit | Raise `limits.memory` in `ords.yaml` and redeploy |
+| `CrashLoopBackOff`, log mentions the certificate or key | The TLS key isn't PKCS#8, or doesn't match the certificate | Re-run `deploy-ords.sh`, which converts and checks it |
+
+**Pods run but aren't Ready (`0/1`)**
+
+Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the database. So `0/1` almost always means a database problem. `kubectl logs -n ords <pod>` shows the pool error:
+
+| Error in the log | Meaning | Fix |
+|------------------|---------|-----|
+| `ORA-01017` | Wrong `ORDS_PUBLIC_USER` password | Replace the Secret (see B.2) |
+| `ORA-28000` | The account is locked, often after repeated wrong passwords | Unlock it in the database, then fix the password |
+| `ORA-12514` | The listener doesn't know the service `pdb1` | Check `DB_SERVICE` in `deploy-ords.sh` against `lsnrctl status` on the database server |
+| `ORA-12541`, connect timeout, `IO Error` | No network path to `node.1apx.com:1521` | Check the database's firewall allows the workers' IPs (171, 172), and that `node.1apx.com` resolves inside the pods. If it doesn't, set `DB_HOST_IP` |
+| `UnknownHostException` | The pods can't resolve the database name | Set `DB_HOST_IP` in `deploy-ords.sh` and redeploy, or add the DNS record |
+
+`deploy-ords.sh` repeats the same login in its preflight check, so running it again shows the database's exact error.
+
+**ORDS is running but unreachable**
+
+| Symptom | Check and fix |
+|---------|---------------|
+| `kubectl get svc -n ords` shows `EXTERNAL-IP <pending>` | MetalLB hasn't assigned the IP: `kubectl get ipaddresspools -n metallb-system` and `kubectl describe svc ords -n ords`. The address must be inside the pool, and nothing else on the LAN may use it |
+| The name doesn't resolve or goes elsewhere | `getent hosts ords.1apx.com` should show `192.168.1.180`. Test without DNS: `curl -sI --resolve ords.1apx.com:443:192.168.1.180 https://ords.1apx.com/apps/` |
+| No answer from `192.168.1.180` at all | MetalLB's speaker answers ARP for it: `kubectl get pods -n metallb-system -o wide` should show a running speaker on each worker. `ip neigh show 192.168.1.180` on a LAN machine shows which MAC answered |
+| Certificate warning in the browser | Check what's served: `openssl s_client -connect 192.168.1.180:443 -servername ords.1apx.com -showcerts </dev/null`. Expect `*.1apx.com` and the full chain |
+| `/i/` images missing (APEX pages unstyled) | `kubectl get configmap ords-db -n ords -o yaml` should show `APEX_VERSION`, and `ls /var/cache/ords-apex/` on the worker should list it with a `.complete` file. If `APEX_VERSION` is empty, set it in `deploy-ords.sh` and redeploy |
+| APEX logs users out between requests | The two pods each hold their own sessions. The Service keeps each client on one pod (`sessionAffinity: ClientIP`), so check it's still there: `kubectl get svc ords -n ords -o jsonpath='{.spec.sessionAffinity}'` |
+
+**Suspect the network policy?** Remove it for a moment: `kubectl delete networkpolicy ords -n ords`, and test again. If that fixes it, a connection ORDS needs isn't in `network-policy.yaml`: add it there, commit, and run `deploy-ords.sh`, which also restores the policy. If it doesn't help, run `deploy-ords.sh` anyway to put the policy back.
+
+**Suspect the host firewall?** See "When troubleshooting" under [Firewall](#firewall).
+
+**A rollout doesn't finish.** `kubectl rollout status deployment/ords -n ords` waits for each new pod to be Ready before removing an old one, so a new pod that can't become Ready stops the rollout while the old pods keep serving. Find out why with the tables above, or go back with `kubectl rollout undo deployment/ords -n ords`.
+
+**A worker is `NotReady`.** On the worker: `sudo systemctl status kubelet containerd` and `sudo journalctl -u kubelet -n 50`. If the log says it can't reach `k8-control.1apx.com`, check that `/etc/hosts` still has the `# BEGIN k8s-cluster` block, and re-run `join-workers.sh` if not.
+
+**Look inside a pod.** `kubectl exec -it -n ords deploy/ords -- bash` opens a shell as the `oracle` user. From there, `ords --config /etc/ords/config config list` shows the active settings, and `curl -sk -H 'Host: ords.1apx.com' https://localhost:8443/apps/_/landing -o /dev/null -w '%{http_code}\n'` runs the same check as the readiness probe.
