@@ -4,7 +4,8 @@
 # Run on k8-control as vaviles after cluster-addons.sh: ./deploy-ords.sh
 # Safe to re-run; re-run after changing ords-settings.conf or renewing the certificate.
 # "./deploy-ords.sh --render <manifest>" only prints a manifest as it would be applied
-# (ci/validate.sh uses it).
+# (ci/validate.sh uses it). "./deploy-ords.sh --diff" shows what a deploy would change in the
+# cluster, without changing anything.
 set -euo pipefail
 
 NAMESPACE=ords
@@ -77,6 +78,27 @@ fi
 if [ -z "$DB_IPS" ]; then
   echo "$DB_HOST doesn't resolve to an IPv4 address. Add a DNS record for it, or set DB_HOST_IP in this script." >&2
   exit 1
+fi
+
+if [ "${1:-}" = --diff ]; then
+  # What a deploy would change: the namespace, network policy, ORDS settings and ORDS itself.
+  # The Secrets, the ords-db ConfigMap (the database's APEX version) and the database are
+  # left out: only a real deploy reads those. kubectl diff exits 1 when there are differences.
+  CONFIG_HASH=$(kubectl get deployment ords -n "$NAMESPACE" \
+    -o jsonpath='{.spec.template.metadata.annotations.1apx\.com/config-hash}' 2>/dev/null || true)
+  rc=0
+  diff_one() { local r=0; kubectl diff -f - || r=$?; [ "$r" -le "$rc" ] || rc=$r; }   # keeps the worst exit
+  diff_one < "$MANIFESTS/namespace.yaml"
+  diff_one < <(render "$MANIFESTS/network-policy.yaml")
+  diff_one < <(kubectl create configmap ords-settings -n "$NAMESPACE" \
+    --from-file="$K8S/config/ords-settings.conf" --dry-run=client -o yaml)
+  diff_one < <(render "$MANIFESTS/ords.yaml")
+  case $rc in
+    0) echo "No differences: a deploy would change nothing shown here." ;;
+    1) echo "Differences above. If ords-settings changed, a deploy also replaces the pods one at a time." ;;
+    *) echo "kubectl diff failed (exit $rc)." >&2; exit "$rc" ;;
+  esac
+  exit 0
 fi
 
 # Private work folder (0700) for the TLS files and passwords while they're stored.

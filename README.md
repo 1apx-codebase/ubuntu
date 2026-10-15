@@ -17,6 +17,7 @@ Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, o
   - [Firewall](#firewall)
   - [Public access through Cloudflare](#public-access-through-cloudflare)
   - [DNS records to add](#dns-records-to-add)
+  - [The database](#the-database)
   - [Before you start](#before-you-start)
   - [Step 1: Create the admin account (on k8-control)](#step-1-create-the-admin-account-on-k8-control)
   - [Step 2: Create the worker VMs (on the Proxmox host)](#step-2-create-the-worker-vms-on-the-proxmox-host)
@@ -30,12 +31,25 @@ Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, o
 - [Validation and CI](#validation-and-ci)
 - [GitHub access](#github-access)
   - [One-time setup](#one-time-setup)
+- [Ownership, changes and licensing](#ownership-changes-and-licensing)
+  - [Ownership and contacts](#ownership-and-contacts)
+  - [Change history](#change-history)
+  - [Licensing](#licensing)
 - [Appendix A: Copying text from Claude Code](#appendix-a-copying-text-from-claude-code)
 - [Appendix B: ORDS on Kubernetes: security, operations and troubleshooting](#appendix-b-ords-on-kubernetes-security-operations-and-troubleshooting)
   - [B.1 Security practices applied](#b1-security-practices-applied)
   - [B.2 Day-to-day operations](#b2-day-to-day-operations)
   - [B.3 Troubleshooting](#b3-troubleshooting)
   - [B.4 Changing the number of ORDS pods](#b4-changing-the-number-of-ords-pods)
+- [Appendix C: Recovery, monitoring and lifecycle](#appendix-c-recovery-monitoring-and-lifecycle)
+  - [C.1 Credentials and where they live](#c1-credentials-and-where-they-live)
+  - [C.2 Monitoring and alerts](#c2-monitoring-and-alerts)
+  - [C.3 Access logs](#c3-access-logs)
+  - [C.4 Backups and restore](#c4-backups-and-restore)
+  - [C.5 Upgrades, step by step](#c5-upgrades-step-by-step)
+  - [C.6 Testing changes](#c6-testing-changes)
+  - [C.7 Retiring the old ORDS server](#c7-retiring-the-old-ords-server)
+  - [C.8 Taking the cluster down](#c8-taking-the-cluster-down)
 
 ## Changes made after installation
 
@@ -206,6 +220,7 @@ Things to know:
 2. Add the router's port forward.
 3. Add the `test.1apx.com` record ([DNS records to add](#dns-records-to-add)), and open `https://test.1apx.com/apps/`. The certificate covers it, and the test exercises the whole path: Cloudflare, the router, the source ranges and ORDS.
 4. Replace the `www.1apx.com` records as described in [DNS records to add](#dns-records-to-add), and delete the test record. To roll back, restore `www`'s old records.
+5. From outside your network, check that ORDS can't be reached without Cloudflare (the last check in [Step 8](#step-8-check-the-cluster)).
 
 ### DNS records to add
 
@@ -228,9 +243,28 @@ Notes:
 - **Proxied** (orange cloud) is what makes Cloudflare's protection and the [source-range rule](#public-access-through-cloudflare) work. A "DNS only" record would send users straight to your IP, where the Service refuses them.
 - **If your public IP changes,** the two Cloudflare records must follow it (see [Public access through Cloudflare](#public-access-through-cloudflare)).
 
+### The database
+
+The Oracle database at `node.1apx.com` holds all the data and isn't part of this repo. The cluster's backups don't include it: its backups (RMAN or otherwise), patching and upgrades stay with whoever looks after the database (see [Ownership and contacts](#ownership-and-contacts)).
+
+What the cluster needs from it:
+
+| Need | Details |
+|------|---------|
+| Listener and service | Port 1521 on `node.1apx.com` (or `DB_HOST_IP`), service `pdb1` |
+| Network access | The database server's firewall must accept TCP 1521 from both workers, `192.168.1.171` and `192.168.1.172`. Pod traffic leaves the workers with the worker's own address |
+| `ORDS_PUBLIC_USER` | Unlocked, with the password stored in the cluster (Step 7). Repeated wrong passwords lock it (`ORA-28000`) |
+| Versions | The ORDS schema must match `ORDS_IMAGE`, and the APEX version decides which images the pods download. Step 7 checks both |
+| Encryption | `SQLNET.ENCRYPTION_SERVER` and `SQLNET.CRYPTO_CHECKSUM_SERVER` in its `sqlnet.ora` must not be `rejected` (the default, `accepted`, is fine) |
+| Sessions | Each ORDS pod keeps at least `jdbc.MinLimit` (25) sessions open and may open up to `jdbc.MaxLimit` (150), so two pods up to 300, plus the old server's while it runs. The database's `processes` and `sessions` limits must allow that |
+
+**When the database is down or under maintenance,** every ORDS pod fails its readiness check, so the Service has no pod to send traffic to and Cloudflare shows its "origin unreachable" error page. ORDS recovers by itself when the database is back; nothing in the cluster needs restarting. Tell users before planned maintenance.
+
+**Schema changes** made for the cluster (`INSTALL_OR_UPGRADE_SCHEMA=true`) also affect the old ORDS server while it still runs (see [C.7](#c7-retiring-the-old-ords-server)). Ask for a database backup before any schema install or upgrade.
+
 ### Before you start
 
-- **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 7). The workers must be able to reach port 1521 on the database server.
+- **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 7). The database server must accept the workers' connections; [The database](#the-database) lists everything the cluster needs from it.
 - **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 7 checks both and tells you if anything needs changing.
 - **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.pem`, `*.p12`, `*.jks` and `*.pfx` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool.
@@ -356,15 +390,18 @@ On k8-control, as `<user>`:
 - `kubectl logs -n ords deploy/ords` shows "HTTPS listening on host: 0.0.0.0 port: 8443" and no pool errors.
 - `curl -sI --resolve www.1apx.com:443:192.168.1.180 https://www.1apx.com/apps/` returns a `302` to the APEX start page, straight from the cluster (before cutover, DNS still points `www` elsewhere). The same for `/` returns `200`, the redirect page. Running `curl -vI` also shows the `*.1apx.com` certificate.
 - After cutover, `curl -sI https://www.1apx.com/apps/` from outside the LAN shows `server: cloudflare` and the same `302`.
+- **Cloudflare can't be bypassed.** From a machine outside your network (a laptop on a phone's hotspot, for example), connect straight to your public IP: `curl -skI --max-time 15 --resolve www.1apx.com:443:<your public IP> https://www.1apx.com/apps/`. It must fail with a timeout: the Service drops connections from addresses that aren't Cloudflare's. If it answers, anyone can reach ORDS without Cloudflare's protection: check `loadBalancerSourceRanges` in `ords.yaml` and whether the router rewrites the source address of forwarded connections. Your public IP is in the router's status page, or `curl -s https://ifconfig.me` from the LAN.
+- `sudo k8s/scripts/health-check.sh` reports every check as `ok` (see [C.2](#c2-monitoring-and-alerts) to run it every 15 minutes, with alerts).
 - `kubectl top nodes` shows CPU and memory for each node.
 - Secrets are encrypted in etcd: `sudo crictl exec $(sudo crictl ps --name '^etcd$' -q) etcdctl --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key get /registry/secrets/ords/ords-tls | head -c 80 | od -c | head -3` shows `k8s:enc:secretbox:v1:key1`, not the certificate.
 - `sudo tail -1 /var/log/kubernetes/audit/audit.log` shows a recent API request.
 
 ### Running the cluster
 
-- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. To run it daily, copy it to `/usr/local/sbin` and add a cron line; the script's header shows both commands. Re-run the `install` command after changing the script. Copy the backups off the VM, and keep them private: they contain the cluster's private keys and the key that decrypts its Secrets. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
+- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config), kubelet's credentials, `k8sadmin`'s SSH key and the matching `etcdutl` to `/var/backups/kubernetes`, and keeps 14 days. To run it daily, copy it to `/usr/local/sbin` and add a cron line; the script's header shows both commands. Re-run the `install` command after changing the script. Copy the backups off the VM, and keep them private: they contain the cluster's private keys and the key that decrypts its Secrets. Also set up scheduled Proxmox backups (vzdump) of all three VMs. To restore, see [C.4](#c4-backups-and-restore).
+- **Health checks and alerts.** Script: [`k8s/scripts/health-check.sh`](k8s/scripts/health-check.sh). It checks the nodes, ORDS, certificates, disk space and backups; schedule it and connect it to an alerting service as in [C.2](#c2-monitoring-and-alerts).
 - **Certificates** that kubeadm creates expire after one year, and upgrading the control plane renews them. Check them with `sudo kubeadm certs check-expiration`.
-- **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data` first (the ORDS pods keep their generated config in an `emptyDir`, which drain otherwise refuses to delete); the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh`, the version in `kubeadm-config.yaml` and the `pod-security.kubernetes.io/*-version` labels in `namespace.yaml`, and upgrade Calico when its tested versions require it. When you change Calico's, MetalLB's or metrics-server's version, update its lines in `k8s/config/upstream.sha256` too (the file's header shows how).
+- **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data` first (the ORDS pods keep their generated config in an `emptyDir`, which drain otherwise refuses to delete); the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh`, the version in `kubeadm-config.yaml` and the `pod-security.kubernetes.io/*-version` labels in `namespace.yaml`, and upgrade Calico when its tested versions require it. When you change Calico's, MetalLB's or metrics-server's version, update its lines in `k8s/config/upstream.sha256` too (the file's header shows how). The commands are in [C.5](#c5-upgrades-step-by-step).
 - **OS updates.** `apt upgrade` is safe because the Kubernetes packages are held. Reboot one node at a time, draining workers first (see Maintenance in [B.2](#b2-day-to-day-operations)).
 - **Certificate renewal.** The `*.1apx.com` certificate expires on 2 January 2027. Put the renewed files in `ssl/` with the same names, or change `CERT_FILE`, `CHAIN_FILE` and `KEY_FILE`. Then run `deploy-ords.sh` again, which updates the `ords-tls` Secret and restarts the pods one at a time.
 - **ORDS upgrades.** Set `ORDS_IMAGE` to the new tag and its digest (the comment above it says where to find the digest) and `INSTALL_OR_UPGRADE_SCHEMA=true`, run `deploy-ords.sh`, then set it back to `false`. Upgrade the old ORDS server too, or retire it.
@@ -424,6 +461,41 @@ The script:
 6. Pushes `main`, then reports whether the repo is private.
 
 Two steps happen on github.com: adding the key under **Settings → SSH and GPG keys**, and creating the repo. To use a different account, repo, name or email, edit the variables at the top of the script.
+
+## Ownership, changes and licensing
+
+### Ownership and contacts
+
+Fill this in and keep it current; whoever looks after the cluster next starts here. Keep passwords out of it ([C.1](#c1-credentials-and-where-they-live) says where they live).
+
+| Area | Owner | Contact | Notes |
+|------|-------|---------|-------|
+| This cluster (k8-control, workers) and this repo | `<user>` | | |
+| Oracle database `node.1apx.com`, its backups and ORDS schema | | | |
+| Domain `1apx.com` and the Cloudflare account | | | Includes the `*.1apx.com` certificate renewal |
+| Router (port forward, DHCP reservations, DNS records) | | | |
+| Proxmox host(s) and their backups | | | |
+| GitHub organisation `1apx-codebase` | | | |
+| Old ORDS server, until retired | | | See [C.7](#c7-retiring-the-old-ords-server) |
+| Escalation when the site is down | | | |
+
+### Change history
+
+[`CHANGELOG.md`](CHANGELOG.md) summarises significant changes: what changed for the cluster or its users, and why. Add an entry with each change that matters to someone running the cluster; `git log` keeps the details.
+
+### Licensing
+
+| Component | Licence |
+|-----------|---------|
+| ORDS (the container image's `/opt/oracle/ords`) | Oracle Free Use Terms and Conditions (the image's `/opt/oracle/ords/LICENSE.txt`) |
+| Java in the ORDS image (Oracle GraalVM) | GraalVM Free Terms and Conditions |
+| Oracle Linux, the image's base | Free to use; its packages carry their own open-source licences |
+| APEX | A no-cost feature of the Oracle Database; the database itself needs its own licence, which this setup doesn't change |
+| Kubernetes, containerd, Calico, MetalLB, metrics-server | Apache License 2.0 |
+| Ubuntu | Free; its packages carry their own open-source licences |
+| Tools used only by `ci/validate.sh` | ShellCheck (GPL-3.0), kubeconform (Apache 2.0), gitleaks (MIT), the Arimo font (SIL Open Font License 1.1; only its measurements are read) |
+
+Running these as described here is within their terms. Read Oracle's terms before redistributing the ORDS image or using it for anything else. This repo is private and has no licence file: its contents stay with its owner.
 
 ## Appendix A: Copying text from Claude Code
 
@@ -543,6 +615,7 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | CPU and memory use | `kubectl top pods -n ords` |
 | Recent events (scheduling, probes, restarts) | `kubectl get events -n ords --sort-by=.lastTimestamp` |
 | Directly, on k8-control | `curl -sI --resolve www.1apx.com:443:192.168.1.180 https://www.1apx.com/apps/` returns `302` |
+| Everything at once (nodes, ORDS, certificates, disks, backups) | `sudo k8s/scripts/health-check.sh` |
 | Through Cloudflare | `curl -sI https://www.1apx.com/apps/` returns `302` (`403` with `cf-mitigated: challenge` means Cloudflare's bot check stopped curl; a browser passes it) |
 | Cloudflare's address ranges changed | `ci/validate.sh` says so. Update `loadBalancerSourceRanges` in `ords.yaml` from <https://www.cloudflare.com/ips-v4>, commit, and run `deploy-ords.sh` |
 
@@ -552,6 +625,7 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 |------|---------|
 | ORDS log of one pod | `kubectl logs -n ords <pod>` (or `deploy/ords` for any one pod) |
 | Follow both pods | `kubectl logs -n ords -l app=ords -f --prefix` |
+| Every request (access log) | `kubectl logs -n ords -l app=ords -c access-log --prefix` (see [C.3](#c3-access-logs)) |
 | A pod's previous run, after a restart | `kubectl logs -n ords <pod> --previous` |
 | Startup steps (APEX download, config) | `kubectl logs -n ords <pod> -c apex-images` and `-c config` |
 | Who changed what in the namespace | `sudo jq -r 'select(.objectRef.namespace=="ords" and .verb!="get" and .verb!="list" and .verb!="watch") \| [.requestReceivedTimestamp, .user.username, .verb, .objectRef.resource, .objectRef.name] \| @tsv' /var/log/kubernetes/audit/audit.log \| tail -20` |
@@ -578,6 +652,7 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | Back up the cluster | `sudo k8s/scripts/etcd-backup.sh`, or check that the daily cron ran: `sudo ls -lt /var/backups/kubernetes \| head` |
 | Cluster certificates | `sudo kubeadm certs check-expiration` once a month. They expire after a year unless the control plane is upgraded |
 | Before any commit | `ci/validate.sh` |
+| See what a deploy would change | `k8s/scripts/deploy-ords.sh --diff` (see [C.6](#c6-testing-changes)) |
 
 ### B.3 Troubleshooting
 
@@ -677,3 +752,268 @@ Don't use `kubectl scale` for a lasting change. The next `deploy-ords.sh` sets `
 The pods are spread across the workers as a preference: with three pods on two workers, one worker runs two. After a worker has been down, all pods may be on one worker; `kubectl rollout restart deployment/ords -n ords` spreads them again.
 
 **Running a single pod** gives up redundancy. If its worker fails, ORDS is down for about 6–7 minutes: Kubernetes waits 5 minutes before replacing a pod on an unreachable node, and the new pod needs a minute or two to start. Draining that worker for maintenance also causes a short outage. Settings changes, certificate renewals and ORDS upgrades still cause no downtime, because the new pod is ready before the old one stops. The second worker then mostly stands by, as the place the pod moves to when the first is down.
+
+## Appendix C: Recovery, monitoring and lifecycle
+
+Commands run on k8-control, from the repo folder, as `<user>` unless marked `sudo`.
+
+### C.1 Credentials and where they live
+
+The cluster's credentials, where each one is kept, and how to replace it. Keep the values themselves in a password manager, never in this repo or its README.
+
+| Credential | Where it lives | In backups | How to replace it |
+|------------|----------------|------------|-------------------|
+| `ORDS_PUBLIC_USER` password | The database; the `ords-db-runtime` Secret; each ORDS pod's wallet (rebuilt at every start); the old ORDS server | etcd snapshots (encrypted) | Change it in the database, then [B.2](#b2-day-to-day-operations), "Change the `ORDS_PUBLIC_USER` password" |
+| SYS password | The database only. The install Job uses it once and `deploy-ords.sh` deletes it | No | The DBA changes it; nothing in the cluster to update |
+| `*.1apx.com` private key | `ssl/1apx.key` on k8-control (git-ignored; keep it `0600`); the `ords-tls` Secret; the old ORDS server | etcd snapshots (encrypted). Keep a copy of `ssl/` in the password manager or another safe place | When renewing the certificate, ask for a new key too; then "Renew the certificate" in [B.2](#b2-day-to-day-operations) |
+| Secrets encryption key | `/etc/kubernetes/enc/encryption-config.yaml` on k8-control (root only) | `kubernetes-config-*.tgz` | See "Replacing the Secrets encryption key" below |
+| Cluster certificates and CA | `/etc/kubernetes/pki` on k8-control | `kubernetes-config-*.tgz` | `sudo kubeadm certs renew all`, then restart the control plane (move the four files in `/etc/kubernetes/manifests` out and back). Upgrades renew them too. The CA lasts 10 years |
+| Admin kubeconfigs | `/etc/kubernetes/admin.conf`, copied to `~/.kube/config` for `<user>` and `k8sadmin`. `/etc/kubernetes/super-admin.conf` is a break-glass credential that can't be revoked: keep it root-only and unused | `kubernetes-config-*.tgz` | `sudo kubeadm certs renew admin.conf`, then `sudo k8s/scripts/control-plane-init.sh` copies it again (it skips the steps already done) |
+| `k8sadmin` SSH key | `~k8sadmin/.ssh/id_ed25519` on k8-control; its public half in `authorized_keys` on every node | `kubernetes-config-*.tgz` | Generate a new key as `k8sadmin`, add its public half to `~k8sadmin/.ssh/authorized_keys` on each node, check `sudo -iu k8sadmin ssh k8-worker-1 true`, then remove the old public key from every node |
+| `<user>`'s GitHub SSH key | `~/.ssh/id_ed25519` on k8-control; the `1apx-codebase` GitHub account | No | Delete it on GitHub and locally, then run `setup-github.sh` |
+| Join tokens | Created and deleted by `join-workers.sh` | No | They expire after 30 minutes anyway |
+| Proxmox root, router admin, Cloudflare, GitHub and domain registrar logins | Outside the cluster | No | Keep them in the password manager, with two-factor authentication wherever it's offered |
+
+**Replacing the Secrets encryption key** (for example, if a backup containing it was exposed). There's one API server, so this takes two restarts:
+
+1. Generate a key: `head -c 32 /dev/urandom | base64`.
+2. In `/etc/kubernetes/enc/encryption-config.yaml`, add it as a new entry *above* `key1`, for example `- name: key2` with `secret: <new key>`. The first key encrypts; the others still decrypt.
+3. Restart the API server: move `/etc/kubernetes/manifests/kube-apiserver.yaml` out of that folder, wait until `sudo crictl ps --name kube-apiserver` lists nothing, and move it back.
+4. Re-encrypt every Secret with the new key: `kubectl get secrets -A -o json | kubectl replace -f -`.
+5. Remove the `key1` entry, and restart the API server again as in step 3.
+6. Run `sudo k8s/scripts/etcd-backup.sh`. Older backups still need the old key, which is in their own `kubernetes-config-*.tgz`.
+
+### C.2 Monitoring and alerts
+
+[`k8s/scripts/health-check.sh`](k8s/scripts/health-check.sh) checks, in one run:
+
+- Every node is `Ready`, with no memory, disk or process pressure.
+- Every ORDS pod is ready, and ORDS answers at `192.168.1.180` with a working database connection.
+- The certificate ORDS serves, and the cluster's own certificates, have at least 30 days left.
+- No node's disk is more than 85% full.
+- The newest etcd backup is less than 26 hours old.
+
+It prints one line per check, exits non-zero if any fails, and writes the result to the system log (`journalctl -t k8s-health`). The thresholds are at the top of the script.
+
+**Set it up** on k8-control, after the backup cron (the backup check fails until a backup exists):
+
+```bash
+sudo install -m 0755 k8s/scripts/health-check.sh /usr/local/sbin/k8s-health-check.sh
+echo '*/15 * * * * root /usr/local/sbin/k8s-health-check.sh >/dev/null' | sudo tee /etc/cron.d/k8s-health-check
+```
+
+Re-run the `install` command after changing the script.
+
+**Alerts.** A check nobody sees doesn't help, so connect it to a "dead man's switch" service such as [healthchecks.io](https://healthchecks.io) (free for a few checks):
+
+1. Create a check with a period of 15 minutes and a grace time of 30 minutes, and add your email (or another channel) to its notifications.
+2. Put its ping URL in `/etc/default/k8s-health-check`, readable only by root:
+   ```bash
+   echo 'HEALTHCHECK_URL=https://hc-ping.com/<your check id>' | sudo tee /etc/default/k8s-health-check
+   sudo chmod 600 /etc/default/k8s-health-check
+   ```
+3. Run `sudo /usr/local/sbin/k8s-health-check.sh` once and check the service shows the ping.
+
+Every run then reports to the service, with its output. You get an alert when a run fails, and also when runs stop arriving, which covers k8-control itself being down or cron not running.
+
+**Watch the public path too.** The health check tests ORDS directly, inside your network. To know that users can reach it through Cloudflare and the router, add an uptime monitor (healthchecks.io doesn't do this; UptimeRobot, Better Stack and others have free plans) for `https://www.1apx.com/apps/`, every 5 minutes, expecting a `302` or `200`. If the monitor gets `403` with a "Just a moment..." page, Cloudflare's bot protection is challenging it. Let it through with a WAF custom rule whose action is **Skip** for the monitor's requests. Cloudflare's free-plan Bot Fight Mode can't be skipped this way: if that's what challenges it, turn Bot Fight Mode off, or rely on the internal health check alone.
+
+**Calendar reminders,** as a second line for what can't be renewed automatically:
+
+- The `*.1apx.com` certificate expires on **2 January 2027**: set a reminder for early December 2026. The health check also fails from 30 days before.
+- The cluster's certificates expire one year after `kubeadm init` (`sudo kubeadm certs check-expiration` shows the date). Upgrading Kubernetes renews them, so a yearly upgrade keeps them current.
+
+**When an alert arrives,** run `sudo k8s/scripts/health-check.sh` to see which check fails, then use [B.3](#b3-troubleshooting).
+
+### C.3 Access logs
+
+Each ORDS pod writes an access log, one line per request, and its `access-log` sidecar container prints it:
+
+```bash
+kubectl logs -n ords -l app=ords -c access-log --prefix --tail=50   # recent requests on every pod
+kubectl logs -n ords <pod> -c access-log -f                         # follow one pod
+```
+
+A line looks like this:
+
+```text
+172.70.1.20 - [15/Oct/2026:14:43:12 +0000] "GET /apps/r/myapp/home HTTP/1.1" 200 5123 "https://www.1apx.com/apps/..." "Mozilla/5.0 ..." 110 www.1apx.com:8443 - -
+```
+
+The fields are the connecting address, the time, the request, the status code, the response size, the referrer, the user agent, the time taken (milliseconds) and the host. ORDS also logs every failed request, with its error, in the ORDS container's own log (`kubectl logs -n ords <pod>`).
+
+Things to know:
+
+- **The address isn't the visitor's.** It's the Cloudflare server that forwarded the request, or a worker's address when the request reached the pod through the other worker. ORDS ignores `X-Forwarded-For` and `CF-Connecting-IP`; in ORDS 26.2.3 that handling is switched off in its code, so no setting changes it. Visitors' real addresses are in Cloudflare's dashboard: **Security → Events** for requests Cloudflare blocked or challenged, and **Analytics** for traffic overall. Cloudflare's per-request logs (Logpush) need its Enterprise plan.
+- **Short retention.** Each pod keeps two days of log files, and they disappear when the pod is replaced (every deploy or restart). The node keeps a little more of the sidecar's output (by default five files of 10 MB per container). For longer retention or searching, add a log collector, such as Grafana Loki with Grafana Alloy on each node. None is set up.
+
+### C.4 Backups and restore
+
+**What's backed up, and what isn't:**
+
+| What | Where | Kept |
+|------|-------|------|
+| Cluster state: every Kubernetes object, including the Secrets (encrypted) | `etcd-<date>.db` in `/var/backups/kubernetes` on k8-control, by `etcd-backup.sh` | 14 days |
+| Certificates, kubeconfigs, control-plane manifests, the Secrets encryption key, kubelet's credentials and config, `k8sadmin`'s SSH key | `kubernetes-config-<date>.tgz`, same place | 14 days |
+| `etcdutl`, the restore tool matching the cluster's etcd | `etcdutl`, same place | Replaced by each backup |
+| The three VMs, whole | Proxmox scheduled backups (vzdump), which you set up in Proxmox | As set there |
+| The database | **Not here.** The database's own backups (see [The database](#the-database)) | |
+| The `ssl/` certificate files | **Not here** (git-ignored). Keep a copy in the password manager or another safe place | |
+| This repo | GitHub | |
+
+Copy `/var/backups/kubernetes` off k8-control regularly (for example with `rsync` from another machine), and keep the copies private: they contain the cluster's private keys.
+
+**Which recovery to use:**
+
+| What happened | Do this |
+|---------------|---------|
+| A bad change to ORDS (settings, image, manifests) | No restore: `kubectl rollout undo deployment/ords -n ords`, or revert the commit and run `deploy-ords.sh` |
+| Something in the `ords` namespace was deleted | No restore: run `deploy-ords.sh`, which recreates everything (it asks for the `ORDS_PUBLIC_USER` password if its Secret is gone) |
+| A worker VM is lost | `kubectl delete node <worker>`, recreate the VM with `proxmox-create-workers.sh` (it skips the VM that still exists), then `sudo k8s/scripts/join-workers.sh` |
+| k8-control is lost, and a Proxmox backup of it exists | Restore the VM in Proxmox. This is the fastest way back. If the backup is more than a few hours old, also restore the newest etcd snapshot (procedure A) |
+| k8-control is lost, with no Proxmox backup | Procedure B |
+| etcd's data is damaged, k8-control is otherwise fine | Procedure A |
+| Everything is lost, or the restore fails | Procedure C: build a new cluster. ORDS keeps no state, so nothing is lost but time (about an hour) |
+
+**Rehearse procedure A** soon after the cluster is built, and after each Kubernetes upgrade: an untried restore often fails when it's needed. It takes about ten minutes, and ORDS keeps serving while the control plane is down.
+
+**Procedure A: restore an etcd snapshot on k8-control.** Pick the snapshot (`ls -l /var/backups/kubernetes`), then:
+
+```bash
+B=/var/backups/kubernetes
+SNAP=$B/etcd-<date>.db                      # the snapshot to restore
+sudo mkdir -p /root/manifests-hold
+sudo mv /etc/kubernetes/manifests/*.yaml /root/manifests-hold/      # stops the control plane
+while sudo crictl ps -q --name 'etcd|kube-apiserver' | grep -q .; do sleep 2; done
+sudo mv /var/lib/etcd "/var/lib/etcd.before-restore-$(date +%F-%H%M)"
+sudo "$B/etcdutl" snapshot restore "$SNAP" --data-dir /var/lib/etcd \
+  --name k8-control --initial-cluster k8-control=https://192.168.1.170:2380 \
+  --initial-advertise-peer-urls https://192.168.1.170:2380
+sudo mv /root/manifests-hold/*.yaml /etc/kubernetes/manifests/      # starts it again
+```
+
+Then wait until `kubectl get nodes` answers, restart kubelet on every node so they pick up the restored state (`sudo systemctl restart kubelet` on k8-control, and through `sudo -iu k8sadmin ssh <worker> sudo systemctl restart kubelet`), and run `sudo k8s/scripts/health-check.sh`. When all is well, delete `/var/lib/etcd.before-restore-*`.
+
+**Procedure B: rebuild k8-control from its backups.**
+
+1. Create a VM like the old one (Ubuntu 26.04, same name `k8-control`, same disk size), and run [`apply-changes.sh`](#apply-all-changes) for its address and DNS.
+2. Clone this repo, then run `sudo k8s/scripts/create-admin-user.sh` and `sudo k8s/scripts/node-prep.sh` (from the console: it turns on the firewall).
+3. Copy the newest backup files (an `etcd-*.db`, the `kubernetes-config-*.tgz` from the same run, and `etcdutl`) into `/var/backups/kubernetes`, owned by root and `0600`.
+4. Put back the configuration, credentials and keys: `sudo tar -xzpf /var/backups/kubernetes/kubernetes-config-<date>.tgz -C /`. This replaces the new `k8sadmin` key with the old one, which the workers accept.
+5. Restore etcd: run the `etcdutl snapshot restore` command from procedure A (`/var/lib/etcd` doesn't exist yet, so skip the steps before it).
+6. `sudo systemctl restart kubelet`. It starts the control plane from the restored manifests; after a minute or two, `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes` answers, and the workers reconnect by themselves.
+7. `sudo k8s/scripts/control-plane-init.sh` copies the admin kubeconfig to `<user>` and `k8sadmin` (the steps already done are skipped).
+8. Set up the backup and health-check crons again (the headers of `etcd-backup.sh` and `health-check.sh`), and run the health check.
+
+**Procedure C: build a new cluster.** On each surviving worker, `sudo kubeadm reset -f` (as `k8sadmin` over SSH, or from the Proxmox console). If k8-control is a new VM, first put back `k8sadmin`'s old SSH key, which the workers accept: after Step 1, `sudo tar -xzpf <a kubernetes-config-*.tgz> -C / home/k8sadmin/.ssh`; without a backup, recreate the workers instead. Then follow Steps 3 to 7 again, on new VMs where needed. `deploy-ords.sh` asks for the `ORDS_PUBLIC_USER` password and needs the `ssl/` files. DNS, Cloudflare and the router need no change, because the addresses stay the same.
+
+### C.5 Upgrades, step by step
+
+**Before any upgrade:**
+
+- Read the release notes of the target version, and check that Calico supports it (Calico's "System requirements" page lists the Kubernetes versions each release is tested with).
+- Move up one minor version at a time: 1.36 → 1.37, never 1.36 → 1.38. Patch releases (1.36.5 → 1.36.6) follow the same steps.
+- `sudo k8s/scripts/etcd-backup.sh`, and `sudo k8s/scripts/health-check.sh` shows everything `ok`.
+
+**1. Update the repo.** Set `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh`, `kubernetesVersion` in `kubeadm-config.yaml`, and the three `pod-security.kubernetes.io/*-version` labels in `namespace.yaml`. Run `ci/validate.sh` and commit.
+
+**2. Upgrade the control plane,** on k8-control. Set `V` to the target version; change both `v1.36` and `v1.37` to match your upgrade:
+
+```bash
+V=1.37.1
+sudo sed -i 's|/v1.36/|/v1.37/|' /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-mark unhold kubeadm && sudo apt-get install -y "kubeadm=$V-*" && sudo apt-mark hold kubeadm
+sudo kubeadm upgrade plan                       # check it offers v$V and reports no problems
+sudo kubeadm upgrade apply "v$V"                # also renews the cluster certificates
+kubectl drain k8-control --ignore-daemonsets --delete-emptydir-data
+sudo apt-mark unhold kubelet kubectl && sudo apt-get install -y "kubelet=$V-*" "kubectl=$V-*" && sudo apt-mark hold kubelet kubectl
+sudo systemctl daemon-reload && sudo systemctl restart kubelet
+kubectl uncordon k8-control
+sudo k8s/scripts/node-prep.sh                   # containerd's pause image for the new version
+```
+
+**3. Upgrade each worker,** one at a time, from k8-control. The other worker carries ORDS meanwhile:
+
+```bash
+V=1.37.1 W=k8-worker-1
+kubectl drain "$W" --ignore-daemonsets --delete-emptydir-data
+sudo -iu k8sadmin ssh "$W" "sudo sed -i 's|/v1.36/|/v1.37/|' /etc/apt/sources.list.d/kubernetes.list \
+  && sudo apt-get update && sudo apt-mark unhold kubeadm kubelet kubectl \
+  && sudo apt-get install -y 'kubeadm=$V-*' && sudo kubeadm upgrade node \
+  && sudo apt-get install -y 'kubelet=$V-*' 'kubectl=$V-*' && sudo apt-mark hold kubeadm kubelet kubectl \
+  && sudo systemctl daemon-reload && sudo systemctl restart kubelet"
+kubectl uncordon "$W"
+kubectl wait --for=condition=Ready "node/$W" --timeout=300s
+```
+
+**4. Finish:** `sudo k8s/scripts/join-workers.sh` re-runs `node-prep.sh` on the workers (for the pause image) and skips the join. `kubectl get nodes` shows the new version on all three. `kubectl rollout restart deployment/ords -n ords` spreads the ORDS pods again, and `sudo k8s/scripts/health-check.sh` should pass.
+
+**Calico.** Upgrade it when the next Kubernetes version needs it, and read Calico's upgrade guide for the target release first:
+
+1. Set `CALICO_VERSION` in `control-plane-init.sh`, update its three lines in `k8s/config/upstream.sha256` (`curl -fsSL <url> | sha256sum`), run `ci/validate.sh` and commit.
+2. On k8-control, download the two operator files, check them against the pins, and apply them:
+   ```bash
+   REPO=$PWD C=v3.33.0; u=https://raw.githubusercontent.com/projectcalico/calico/$C/manifests
+   cd "$(mktemp -d)" && curl -fsSL -O "$u/operator-crds.yaml" -O "$u/tigera-operator.yaml" \
+     && grep -E "/$C/manifests/(operator-crds|tigera-operator)\.yaml" "$REPO/k8s/config/upstream.sha256" \
+          | sed 's|  https://.*/|  |' | sha256sum -c \
+     && kubectl apply --server-side --force-conflicts -f operator-crds.yaml -f tigera-operator.yaml \
+     && kubectl rollout status daemonset/calico-node -n calico-system --timeout=600s
+   cd "$REPO"
+   ```
+
+**MetalLB and metrics-server.** Read the release notes for breaking changes. Change `METALLB_VERSION` or `METRICS_SERVER_VERSION` in `cluster-addons.sh` and their lines in `upstream.sha256`, validate, commit, and run `k8s/scripts/cluster-addons.sh` again: it applies the new versions.
+
+**ORDS** upgrades are in [Running the cluster](#running-the-cluster).
+
+### C.6 Testing changes
+
+There's no separate test cluster: every change goes to the live one. These keep that safe:
+
+- **Before committing:** `ci/validate.sh` checks the scripts, the manifests as `deploy-ords.sh` renders them, Pod Security, and the values that must agree across files.
+- **Before deploying:** `k8s/scripts/deploy-ords.sh --diff` shows what a deploy would change in the cluster (the namespace, network policy, ORDS settings and the ORDS objects), without changing anything. It doesn't show Secrets, or the effects of a different database version.
+- **While deploying:** new pods must pass their readiness check before an old one stops (`maxUnavailable: 0`). A change that breaks ORDS leaves the rollout stuck with the old pods still serving, and `deploy-ords.sh` fails after 20 minutes.
+- **Going back:** `kubectl rollout undo deployment/ords -n ords` returns to the previous pods at once. To make it permanent, revert the commit and run `deploy-ords.sh`.
+
+For changes that touch the database (an ORDS upgrade with `INSTALL_OR_UPGRADE_SCHEMA=true`, a new APEX version), ask for a database backup first and pick a quiet time: a schema upgrade can't be undone by Kubernetes. For larger experiments, a small second cluster built from this repo, with its own address and host name, is the safe place.
+
+### C.7 Retiring the old ORDS server
+
+After cutover, the old server is the way back, so keep it until the cluster has proved itself:
+
+1. **Keep it running, unchanged,** for two to four weeks. Rolling back is restoring `www`'s old records in Cloudflare (noted at cutover).
+2. **Find anything still using it.** Its access log shows requests that don't come through `www.1apx.com`: other host names, its IP address, internal systems or scripts. Move each of those to `https://www.1apx.com/`.
+3. **Keep the versions in step.** If you upgraded the ORDS schema for the cluster, upgrade the old server to the same ORDS version, or stop it now.
+4. **Stop ORDS on it,** and leave the machine off (not deleted) for another few weeks.
+5. **Clean up:**
+   - Delete its copy of the `*.1apx.com` private key, and its ORDS configuration and wallet, which hold the `ORDS_PUBLIC_USER` password.
+   - Remove its DNS records and router port forwards, and its address from the database server's firewall.
+   - Change the `ORDS_PUBLIC_USER` password ([B.2](#b2-day-to-day-operations)), since the old server knew it.
+   - Remove it from [Ownership and contacts](#ownership-and-contacts), and add an entry to the change log.
+
+### C.8 Taking the cluster down
+
+If the cluster is ever retired or replaced, in this order:
+
+1. **Point users elsewhere first:** change or remove the `www.1apx.com` record in Cloudflare. Otherwise the site goes down as soon as the cluster does.
+2. **Router:** remove the port 443 forward to `192.168.1.180`, and the address reservations.
+3. **Monitoring:** delete the healthchecks.io check and the uptime monitor, or they'll alert.
+4. **ORDS:** `kubectl delete namespace ords` (this also deletes its Secrets, with the password and TLS key).
+5. **Workers,** on the Proxmox host: `qm stop 211 && qm destroy 211 --purge`, the same for 212, and `qm destroy 9000` for the template if nothing else uses it.
+6. **k8-control:**
+   ```bash
+   sudo kubeadm reset -f
+   sudo rm -rf /etc/cni/net.d /etc/kubernetes /var/lib/etcd /var/log/kubernetes
+   sudo rm -f /etc/cron.d/etcd-backup /etc/cron.d/k8s-health-check /etc/default/k8s-health-check \
+     /usr/local/sbin/etcd-backup.sh /usr/local/sbin/k8s-health-check.sh
+   sudo apt-mark unhold kubelet kubeadm kubectl && sudo apt-get purge -y kubelet kubeadm kubectl
+   sudo rm -f /etc/apt/sources.list.d/kubernetes.list /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+   sudo sed -i '/^# BEGIN k8s-cluster$/,/^# END k8s-cluster$/d' /etc/hosts
+   sudo userdel -r k8sadmin && sudo rm -f /etc/sudoers.d/k8sadmin
+   sudo reboot                                    # clears the network rules Kubernetes left
+   ```
+   The firewall (ufw) stays on with the cluster's rules; remove them with `sudo ufw status numbered` and `sudo ufw delete <number>`, keeping the SSH rule.
+7. **Backups:** once nothing needs them, delete `/var/backups/kubernetes` and every copy of it, and the Proxmox backups of the workers. They contain the cluster's private keys.
+8. **Database:** remove the workers' addresses from its firewall. The ORDS schema stays: other ORDS servers may use it.
+9. **This repo:** add a final change-log entry, and archive it on GitHub (**Settings → General → Archive this repository**).

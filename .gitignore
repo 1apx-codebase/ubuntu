@@ -12,6 +12,7 @@ kubeconfig
 admin.conf
 etcd-*.db
 kubernetes-etc-*.tgz
+kubernetes-config-*.tgz
 
 # Local environment files
 .env

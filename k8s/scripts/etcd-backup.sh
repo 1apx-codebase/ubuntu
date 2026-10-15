@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Back up the cluster state: an etcd snapshot plus the control plane's certificates and config.
+# Back up the cluster state: an etcd snapshot plus the control plane's certificates and config,
+# kubelet's credentials and config, k8sadmin's SSH key, and the etcdutl that restores the snapshot.
+# Restoring: README, Appendix C.4.
 # Run on k8-control as root: sudo ./etcd-backup.sh
 # Schedule it daily from a root-owned copy, so root's cron never runs a file in a user's home:
 #   sudo install -m 0755 k8s/scripts/etcd-backup.sh /usr/local/sbin/etcd-backup.sh
@@ -31,10 +33,23 @@ crictl exec "$cid" etcdctl \
 crictl exec "$cid" etcdutl snapshot status "$snap" -w table
 mv "$snap" "$BACKUP_DIR/etcd-$stamp.db"
 
-# Certificates, kubeconfigs and static pod manifests are needed to restore the snapshot
-tar -czf "$BACKUP_DIR/kubernetes-etc-$stamp.tgz" -C / etc/kubernetes
+# Restoring needs: the certificates, kubeconfigs, static pod manifests and the Secrets
+# encryption key (/etc/kubernetes), kubelet's client certificate and config (/var/lib/kubelet),
+# and k8sadmin's SSH key, which the workers accept
+files=(etc/kubernetes var/lib/kubelet/pki var/lib/kubelet/config.yaml var/lib/kubelet/kubeadm-flags.env)
+ssh_dir=$(getent passwd k8sadmin | cut -d: -f6)/.ssh
+[ ! -d "$ssh_dir" ] || files+=("${ssh_dir#/}")
+tar -czf "$BACKUP_DIR/kubernetes-config-$stamp.tgz" -C / "${files[@]}"
 chmod 600 "$BACKUP_DIR"/*"$stamp"*
+# etcdutl from the running etcd image, the version that matches the snapshot. A restore runs it
+# while etcd is stopped, so it has to be on the host. Kept once, refreshed when etcd changes.
+pid=$(crictl inspect --output go-template --template '{{.info.pid}}' "$cid")
+if [ -x "/proc/$pid/root/usr/local/bin/etcdutl" ]; then
+  install -m 0700 "/proc/$pid/root/usr/local/bin/etcdutl" "$BACKUP_DIR/etcdutl"
+else
+  echo "WARNING: couldn't copy etcdutl from the etcd container; a restore will need it." >&2
+fi
 
-find "$BACKUP_DIR" -type f -mtime +"$KEEP_DAYS" -delete
+find "$BACKUP_DIR" -type f -name "*-20*" -mtime +"$KEEP_DAYS" -delete
 ls -lh "$BACKUP_DIR"/*"$stamp"*
 echo "Copy $BACKUP_DIR off this VM (it holds the cluster's private keys)."

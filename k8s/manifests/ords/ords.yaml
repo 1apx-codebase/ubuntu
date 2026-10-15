@@ -39,6 +39,8 @@ spec:
       annotations:
         # Hash of the ConfigMaps and Secrets below: a change replaces the pods
         1apx.com/config-hash: "__CONFIG_HASH__"
+        # kubectl logs and exec use the ORDS container unless told otherwise (-c access-log)
+        kubectl.kubernetes.io/default-container: ords
     spec:
       hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
       automountServiceAccountToken: false   # ORDS doesn't use the Kubernetes API
@@ -121,6 +123,10 @@ spec:
                 '<meta http-equiv="refresh" content="0; url=/apps/"><title>Redirecting</title></head>' \
                 '<body><a href="/apps/">Continue to the application</a></body></html>' > "$docroot/index.html"
               $c set standalone.doc.root "$docroot"
+              # Access log: one file a day in the access-log volume, kept 2 days; the
+              # access-log sidecar prints it (kubectl logs -c access-log)
+              $c set standalone.access.log /var/log/ords
+              $c set standalone.access.log.retainDays 2
               pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
               printf '%s\n%s\n' "$pw" "$pw" | $c secret db.password
           envFrom:
@@ -147,6 +153,41 @@ spec:
               readOnly: true
             - name: runtime
               mountPath: /run/secrets/ords-runtime
+              readOnly: true
+        # Sidecar (runs alongside ORDS): prints ORDS's access log, one file a day, so
+        # "kubectl logs -c access-log" shows every request. Follows the newest file.
+        - name: access-log
+          image: __ORDS_IMAGE__
+          restartPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              cd /var/log/ords
+              cur= pid=
+              trap '[ -z "$pid" ] || kill "$pid"; exit 0' TERM
+              while :; do
+                new=$(ls -1 ords_*.log 2>/dev/null | tail -1)
+                if [ -n "$new" ] && [ "$new" != "$cur" ]; then
+                  [ -z "$pid" ] || kill "$pid" 2>/dev/null
+                  tail -n +1 -F "$new" & pid=$!
+                  cur=$new
+                fi
+                sleep 5
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: access-log
+              mountPath: /var/log/ords
               readOnly: true
       containers:
         - name: ords
@@ -225,6 +266,8 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: access-log
+              mountPath: /var/log/ords
       volumes:
         - name: config
           emptyDir:
@@ -235,6 +278,9 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi           # Java's temporary files, such as large uploads
+        - name: access-log
+          emptyDir:
+            sizeLimit: 1Gi           # two days of access log
         - name: settings
           configMap:
             name: ords-settings
