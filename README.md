@@ -307,3 +307,34 @@ Two steps happen on github.com: adding the key under **Settings → SSH and GPG 
 
 The GitHub CLI (`gh`) is installed on this machine but not logged in. The SSH setup doesn't need it.
 
+
+## Appendix A: Copying text from Claude Code
+
+On 2026-10-15, text couldn't be copied out of Claude Code (run as `sudo claude`) with the mouse.
+
+**Cause.** A fresh install of Claude Code starts in its fullscreen interface, which captures the mouse. Dragging selects text inside Claude Code, which then tries to copy it to the clipboard with an OSC 52 escape code. The terminal used here doesn't accept OSC 52, so nothing reached the clipboard. Pasting into Claude Code was not affected.
+
+**Fix.** Switch Claude Code to its classic interface, so the terminal handles selection and copy itself:
+
+| Change | File |
+|--------|------|
+| Add `"tui": "default"` | `/root/.claude/settings.json` |
+
+The file now reads:
+
+```json
+{
+  "theme": "auto",
+  "tui": "default"
+}
+```
+
+The original is backed up at `/root/.claude/settings.json.bak-2026-10-15-015041`.
+
+Script: [`claude-classic-tui.sh`](claude-classic-tui.sh). Run it with `sudo ./claude-classic-tui.sh`, or `sudo ./claude-classic-tui.sh --revert` to go back to fullscreen. Each run backs up the settings file first.
+
+Notes:
+
+- **Restart Claude Code after the change.** If the setting changes while a session is running, the screen can go blank. Press Ctrl+L to redraw, or exit and run `sudo claude` again, then use `/resume` to continue the conversation.
+- **Settings are per user.** `sudo claude` reads `/root/.claude/settings.json`. Running `claude` as `vaviles` reads `/home/vaviles/.claude/settings.json`, which doesn't have this setting.
+- **Without this fix**, you can still copy in the fullscreen interface by holding a key while you drag: Shift in most Linux and Windows terminals and PuTTY, Option in iTerm2, Fn in macOS Terminal.app.
