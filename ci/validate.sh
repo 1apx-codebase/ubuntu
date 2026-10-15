@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Validate the whole repo: scripts, Kubernetes manifests, values that must agree across
+# files, pinned upstream downloads, file hygiene, and secrets in the git history.
+# Run from anywhere: ci/validate.sh [--offline]. GitHub Actions runs it on every push.
+# --offline skips the checks that need the internet (upstream hashes, Calico's file).
+# Tools are downloaded once, checked against pinned SHA-256s, into ~/.cache/ubuntu-repo-tools.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+K8S=$ROOT/k8s
+TOOLS=${XDG_CACHE_HOME:-$HOME/.cache}/ubuntu-repo-tools
+ONLINE=true
+[ "${1:-}" = --offline ] && ONLINE=false
+cd "$ROOT"
+
+failed=0
+pass() { echo "ok    $*"; }
+fail() { echo "FAIL  $*" >&2; failed=1; }
+# check <description> <command...>: run a check and report it
+check() { local d=$1; shift; if "$@"; then pass "$d"; else fail "$d"; fi; }
+# var <file> <name>: a NAME=value line's value, without its comment
+var() { sed -n "s/^$2=\([^ ]*\).*/\1/p" "$1" | head -1; }
+
+# tool <name> <url> <sha256>: path to a pinned, checksum-verified tool binary
+tool() {
+  local dir="$TOOLS/$1-${3:0:12}" f
+  if [ ! -x "$dir/$1" ]; then
+    rm -rf "$dir" && mkdir -p "$dir/x"
+    f="$dir/download"
+    curl -fsSL "$2" -o "$f"
+    echo "$3  $f" | sha256sum -c --quiet - || { echo "$2 doesn't match its pinned SHA-256" >&2; exit 1; }
+    case "$2" in
+      *.tar.gz) tar -xzf "$f" -C "$dir/x" ;;
+      *.tar.xz) tar -xJf "$f" -C "$dir/x" ;;
+      *)        cp "$f" "$dir/x/$1" ;;
+    esac
+    install -m 0755 "$(find "$dir/x" -type f -name "$1" | head -1)" "$dir/$1"
+    rm -rf "$dir/x" "$f"
+  fi
+  echo "$dir/$1"
+}
+
+K8S_VERSION=$(var "$K8S/scripts/node-prep.sh" K8S_VERSION)
+SHELLCHECK=$(tool shellcheck https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87)
+KUBECONFORM=$(tool kubeconform https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883)
+GITLEAKS=$(tool gitleaks https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb)
+# kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own hash
+KUBEADM_URL="https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/kubeadm"
+KUBEADM=$(tool kubeadm "$KUBEADM_URL" "$(curl -fsSL "$KUBEADM_URL.sha256")")
+python3 -c 'import yaml' 2>/dev/null || { echo "Needs Python's yaml module (apt install python3-yaml)." >&2; exit 1; }
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mapfile -t SCRIPTS < <(git ls-files '*.sh')
+
+echo "== Shell scripts"
+for f in "${SCRIPTS[@]}"; do
+  bash -n "$f" || fail "bash -n $f"
+done
+check "shellcheck: ${#SCRIPTS[@]} scripts" "$SHELLCHECK" -x -P SCRIPTDIR "${SCRIPTS[@]}"
+# Every script is executable, except common.sh, which is only sourced
+while read -r mode _ _ f; do
+  [ "$f" = k8s/scripts/common.sh ] && continue
+  [ "$mode" = 100755 ] || fail "$f is not executable in git (git update-index --chmod=+x $f)"
+done < <(git ls-files -s '*.sh')
+
+echo "== Kubernetes manifests"
+mkdir -p "$work/rendered"
+# ORDS manifests exactly as deploy-ords.sh applies them, with and without DB_HOST_IP
+sed 's/^DB_HOST_IP=.*/DB_HOST_IP=10.0.0.5/' "$K8S/scripts/deploy-ords.sh" > "$work/deploy-ords-hostalias.sh"
+for m in "$K8S"/manifests/ords/*.yaml; do
+  n=$(basename "$m" .yaml)
+  bash "$K8S/scripts/deploy-ords.sh" --render "$m" > "$work/rendered/$n.yaml"
+  bash "$work/deploy-ords-hostalias.sh" --render "$m" > "$work/rendered/$n-hostalias.yaml"
+done
+cp "$K8S/manifests/addons/"*.yaml "$work/rendered/"
+if grep -l '__[A-Z_]*__' "$work"/rendered/*.yaml; then fail "placeholders left after rendering"; fi
+CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+check "kubeconform (Kubernetes $K8S_VERSION schemas)" "$KUBECONFORM" -strict -summary \
+  -kubernetes-version "$K8S_VERSION" -schema-location default -schema-location "$CRDS" "$work"/rendered/*.yaml
+if "$KUBEADM" config validate --config "$K8S/manifests/kubeadm-config.yaml" >/dev/null; then
+  pass "kubeadm $K8S_VERSION config validate"
+else
+  fail "kubeadm config validate"
+fi
+# The audit policy has no published schema: check its shape and that every rule has a level
+if python3 - "$K8S/manifests/audit-policy.yaml" <<'PY'; then pass "audit policy"; else fail "audit policy"; fi
+import sys, yaml
+p = yaml.safe_load(open(sys.argv[1]))
+assert p["apiVersion"] == "audit.k8s.io/v1" and p["kind"] == "Policy", "not an audit.k8s.io/v1 Policy"
+levels = {"None", "Metadata", "Request", "RequestResponse"}
+assert p["rules"] and all(r.get("level") in levels for r in p["rules"]), "a rule has no valid level"
+PY
+# Bash embedded in the manifests
+embedded=("$work"/rendered/ords.yaml "$work"/rendered/ords-preflight.yaml "$work"/rendered/ords-install-job.yaml)
+if python3 - "${embedded[@]}" <<'PY'; then pass "bash -n on the scripts in the manifests"; else fail "embedded scripts"; fi
+import subprocess, sys, yaml
+bad = 0
+for f in sys.argv[1:]:
+    for d in yaml.safe_load_all(open(f)):
+        if not d or d["kind"] not in ("Deployment", "Pod", "Job"):
+            continue
+        spec = d["spec"] if d["kind"] == "Pod" else d["spec"]["template"]["spec"]
+        for c in spec.get("initContainers", []) + spec["containers"]:
+            if c.get("command", [])[:2] == ["/bin/bash", "-c"]:
+                r = subprocess.run(["bash", "-n"], input=c["args"][0], text=True, capture_output=True)
+                if r.returncode:
+                    print(f"{d['kind']}/{c['name']}: {r.stderr}", file=sys.stderr); bad = 1
+sys.exit(bad)
+PY
+
+echo "== Values that must agree across files"
+same() {  # same <description> <value> <value>...
+  local d=$1 v=$2; shift 2
+  for x in "$@"; do [ "$x" = "$v" ] || { fail "$d differs: '$v' vs '$x'"; return; }; done
+  pass "$d: $v"
+}
+kubeadm_cfg="$K8S/manifests/kubeadm-config.yaml"
+hosts=$(sed -n '/^HOSTS_BLOCK="/,/"$/p' "$K8S/scripts/node-prep.sh" | tr -d '"' | sed 's/^HOSTS_BLOCK=//')
+host_ip() { awk -v h="$1" '$3 == h {print $1}' <<<"$hosts"; }
+same "Kubernetes version" "v$K8S_VERSION" "$(sed -n 's/^kubernetesVersion: //p' "$kubeadm_cfg")"
+same "Kubernetes package channel" "v${K8S_VERSION%.*}" "$(var "$K8S/scripts/node-prep.sh" K8S_MINOR)"
+same "Pod CIDR" "$(var "$K8S/scripts/node-prep.sh" POD_CIDR)" \
+  "$(var "$K8S/scripts/control-plane-init.sh" POD_CIDR)" "$(sed -n 's/^ *podSubnet: //p' "$kubeadm_cfg")"
+same "k8-control IP" "$(host_ip k8-control)" "$(sed -n 's/^ *advertiseAddress: //p' "$kubeadm_cfg")" \
+  "$(var "$ROOT/apply-changes.sh" ADDR | cut -d/ -f1)"
+same "Encryption config path" "$(var "$K8S/scripts/control-plane-init.sh" ENC_DIR)/encryption-config.yaml" \
+  "$(grep -A1 'name: encryption-provider-config' "$kubeadm_cfg" | sed -n 's/^ *value: //p')"
+for w in k8-worker-1 k8-worker-2; do
+  same "$w IP" "$(host_ip "$w")" "$(grep -o "[0-9]* $w [0-9.]*" "$K8S/scripts/proxmox-create-workers.sh" | awk '{print $3}')"
+done
+dns_sorted() { tr ', ' '\n' <<<"$1" | grep . | sort | xargs; }
+same "DNS servers" "$(dns_sorted "$(sed -n 's/^DNS_SERVERS="\([^"]*\)".*/\1/p' "$K8S/scripts/node-prep.sh")")" \
+  "$(dns_sorted "$(sed -n 's/^DNS="\([^"]*\)".*/\1/p' "$K8S/scripts/proxmox-create-workers.sh")")" \
+  "$(dns_sorted "$(sed -n 's/^DNS="\([^"]*\)".*/\1/p' "$ROOT/apply-changes.sh")")"
+# The ORDS LoadBalancer IP must be inside MetalLB's pool
+lb_ip=$(var "$K8S/scripts/deploy-ords.sh" LB_IP)
+range=$(sed -n 's/^ *- \([0-9.]*-[0-9.]*\)$/\1/p' "$K8S/manifests/addons/metallb-pool.yaml")
+check "ORDS IP $lb_ip within the MetalLB pool $range" python3 -c 'import ipaddress as i, sys
+a, b = sys.argv[2].split("-")
+sys.exit(not i.ip_address(a) <= i.ip_address(sys.argv[1]) <= i.ip_address(b))' "$lb_ip" "$range"
+# Images are pinned by digest
+check "ORDS image pinned by tag and digest" grep -q '^ORDS_IMAGE=[^ ]*:[^ ]*@sha256:[0-9a-f]\{64\}' "$K8S/scripts/deploy-ords.sh"
+
+echo "== Pinned upstream manifests (k8s/config/upstream.sha256)"
+pins="$K8S/config/upstream.sha256"
+calico=$(var "$K8S/scripts/control-plane-init.sh" CALICO_VERSION)
+metallb=$(var "$K8S/scripts/cluster-addons.sh" METALLB_VERSION)
+metrics=$(var "$K8S/scripts/cluster-addons.sh" METRICS_SERVER_VERSION)
+expected=(
+  "https://raw.githubusercontent.com/projectcalico/calico/$calico/manifests/operator-crds.yaml"
+  "https://raw.githubusercontent.com/projectcalico/calico/$calico/manifests/tigera-operator.yaml"
+  "https://raw.githubusercontent.com/projectcalico/calico/$calico/manifests/custom-resources.yaml"
+  "https://raw.githubusercontent.com/metallb/metallb/$metallb/config/manifests/metallb-native.yaml"
+  "https://github.com/kubernetes-sigs/metrics-server/releases/download/$metrics/components.yaml"
+)
+ok=true
+for u in "${expected[@]}"; do
+  awk -v u="$u" '$2 == u {f=1} END {exit !f}' "$pins" || { fail "not pinned: $u"; ok=false; }
+done
+[ "$(grep -cv '^#' "$pins")" = "${#expected[@]}" ] || { fail "$pins has entries the scripts don't use"; ok=false; }
+[ "$ok" = false ] || pass "every upstream manifest the scripts use is pinned, and nothing else"
+if [ "$ONLINE" = true ]; then
+  ok=true
+  while read -r sum u; do
+    if ! curl -fsSL "$u" -o "$work/up" || ! echo "$sum  $work/up" | sha256sum -c --quiet - 2>/dev/null; then
+      fail "upstream doesn't match its pinned hash (or can't be downloaded): $u"; ok=false
+    fi
+  done < <(grep -v '^#' "$pins")
+  [ "$ok" = false ] || pass "pinned hashes match upstream"
+  # Calico's Installation with our pod CIDR, as control-plane-init.sh applies it
+  curl -fsSL "${expected[2]}" | sed "s|cidr: 192.168.0.0/16|cidr: $(var "$K8S/scripts/node-prep.sh" POD_CIDR)|" \
+    | python3 -c 'import sys,yaml; print(yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Installation"]))' \
+    > "$work/calico-installation.yaml"
+  check "Calico Installation with our pod CIDR" "$KUBECONFORM" -strict -kubernetes-version "$K8S_VERSION" \
+    -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
+fi
+
+echo "== File hygiene"
+mapfile -t TEXT < <(git ls-files | grep -vE '\.(png|jpg|zip|tar|gz)$')
+if grep -lI $'\r' "${TEXT[@]}"; then fail "CRLF line endings (above)"; else pass "LF line endings"; fi
+if grep -nIE '[[:space:]]+$' "${TEXT[@]}" | grep -v '\.md:'; then fail "trailing whitespace (above)"; else pass "no trailing whitespace"; fi
+ok=true
+for f in "${TEXT[@]}"; do [ -z "$(tail -c1 "$f")" ] || { fail "$f doesn't end with a newline"; ok=false; }; done
+[ "$ok" = false ] || pass "files end with a newline"
+
+echo "== Secrets"
+if "$GITLEAKS" git --no-banner --redact "$ROOT" >/dev/null 2>&1; then
+  pass "gitleaks: no secrets in the git history"
+else
+  "$GITLEAKS" git --no-banner --redact -v "$ROOT" >&2 || true
+  fail "gitleaks found secrets"
+fi
+if git ls-files | grep -E '(^|/)ssl/|\.(key|pem|p12|jks|pfx)$|kubeconfig|admin\.conf'; then
+  fail "key, certificate or kubeconfig files are tracked (above)"
+else
+  pass "no key, certificate or kubeconfig files tracked"
+fi
+
+echo
+if [ "$failed" != 0 ]; then echo "Some checks FAILED." >&2; exit 1; fi
+echo "All checks passed."

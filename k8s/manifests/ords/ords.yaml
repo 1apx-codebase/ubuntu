@@ -1,4 +1,4 @@
-# ORDS: two stateless replicas, one per worker, behind a MetalLB LAN IP, serving HTTPS
+# ORDS: two stateless replicas, normally one per worker, behind a MetalLB LAN IP, serving HTTPS
 # with the *.1apx.com certificate. Applied by deploy-ords.sh, which replaces
 # __ORDS_IMAGE__, __ORDS_HOSTNAME__, __LB_IP__ and __CONFIG_HASH__.
 #
@@ -15,6 +15,8 @@ metadata:
   namespace: ords
   labels:
     app: ords
+    app.kubernetes.io/name: ords
+    app.kubernetes.io/part-of: ords
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -30,6 +32,8 @@ spec:
     metadata:
       labels:
         app: ords
+        app.kubernetes.io/name: ords
+        app.kubernetes.io/part-of: ords
       annotations:
         # Hash of the ConfigMaps and Secrets below: a change replaces the pods
         ords.1apx.com/config-hash: "__CONFIG_HASH__"
@@ -230,6 +234,9 @@ kind: PodDisruptionBudget
 metadata:
   name: ords
   namespace: ords
+  labels:
+    app.kubernetes.io/name: ords
+    app.kubernetes.io/part-of: ords
 spec:
   minAvailable: 1
   selector:
@@ -241,10 +248,15 @@ kind: Service
 metadata:
   name: ords
   namespace: ords
+  labels:
+    app.kubernetes.io/name: ords
+    app.kubernetes.io/part-of: ords
   annotations:
     metallb.io/loadBalancerIPs: __LB_IP__
 spec:
   type: LoadBalancer
+  # MetalLB answers on the LAN IP directly, so no NodePorts need to be opened
+  allocateLoadBalancerNodePorts: false
   selector:
     app: ords
   # APEX and Database Actions keep sessions in the ORDS process, so keep each client on one pod

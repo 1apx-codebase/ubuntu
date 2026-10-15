@@ -1,0 +1,27 @@
+# Kubernetes API audit policy. control-plane-init.sh copies it to
+# /etc/kubernetes/audit/policy.yaml; the API server logs to /var/log/kubernetes/audit/
+# (30 days, rotated at 100 MB, 10 files kept). The first matching rule applies.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  # Health checks and events: frequent and of no audit value
+  - level: None
+    nonResourceURLs: ["/healthz*", "/livez*", "/readyz*", "/version"]
+  - level: None
+    resources:
+      - group: ""
+        resources: ["events"]
+  # Secrets, ConfigMaps and token reviews: who did what, never the contents
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+      - group: "authentication.k8s.io"
+        resources: ["tokenreviews"]
+  # Reads are too many to log in full; record them without bodies
+  - level: Metadata
+    verbs: ["get", "list", "watch"]
+  # Every other change, with its request body
+  - level: Request

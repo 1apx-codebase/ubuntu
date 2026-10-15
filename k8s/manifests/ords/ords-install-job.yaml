@@ -8,6 +8,7 @@ metadata:
   namespace: ords
   labels:
     app: ords-install
+    app.kubernetes.io/part-of: ords
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: 1800     # the same 30 minutes deploy-ords.sh waits

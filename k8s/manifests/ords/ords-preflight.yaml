@@ -8,6 +8,7 @@ metadata:
   namespace: ords
   labels:
     app: ords-preflight
+    app.kubernetes.io/part-of: ords
 spec:
   restartPolicy: Never
   activeDeadlineSeconds: 900     # stop it if it hangs (deploy-ords.sh waits 10 minutes)

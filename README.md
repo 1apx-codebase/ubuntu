@@ -48,7 +48,9 @@ Files in [`k8s/`](k8s/) are kept apart by type, so a change to a manifest or set
 |--------|----------|
 | [`k8s/scripts/`](k8s/scripts/) | Shell scripts, one per step, which you run |
 | [`k8s/manifests/`](k8s/manifests/) | Kubernetes and kubeadm YAML, which the scripts apply. [`manifests/ords/`](k8s/manifests/ords/) holds the ORDS ones |
-| [`k8s/config/`](k8s/config/) | Application settings. [`ords-settings.conf`](k8s/config/ords-settings.conf) holds the ORDS settings |
+| [`k8s/manifests/addons/`](k8s/manifests/addons/) | Settings for the add-ons: MetalLB's LAN address pool |
+| [`k8s/config/`](k8s/config/) | Application settings. [`ords-settings.conf`](k8s/config/ords-settings.conf) holds the ORDS settings, and [`upstream.sha256`](k8s/config/upstream.sha256) pins every upstream manifest the scripts download |
+| [`ci/`](ci/) | [`validate.sh`](ci/validate.sh), which checks the whole repo (see [Validation and CI](#validation-and-ci)) |
 
 ### Cluster design
 
@@ -202,6 +204,9 @@ Script: [`k8s/scripts/control-plane-init.sh`](k8s/scripts/control-plane-init.sh)
 
 1. Checks the kubeadm config, pulls the control-plane images and runs `kubeadm init`.
    The API server is reached as `k8-control.1apx.com:6443`, a name rather than an IP, so more control-plane nodes can be added later without rebuilding.
+   Before that, it sets up two things the API server needs from its first start:
+   - **Encrypted Secrets.** Secrets, such as the database passwords and the TLS key, are encrypted in etcd, and so in etcd backups. The key is generated on k8-control into `/etc/kubernetes/enc/` and never leaves it, except in the etcd backups, which need it to restore.
+   - **Audit log.** The API server logs every change to the cluster in `/var/log/kubernetes/audit/`, keeping 30 days. The policy is [`k8s/manifests/audit-policy.yaml`](k8s/manifests/audit-policy.yaml). For Secrets and ConfigMaps it logs who did what, never their contents. To change the policy later, copy it to `/etc/kubernetes/audit/policy.yaml` and restart the API server by moving `/etc/kubernetes/manifests/kube-apiserver.yaml` out of that folder and back.
 2. Copies the admin kubeconfig to `~/.kube/config` for `vaviles` and `k8sadmin`, so `kubectl` works for both.
 3. Installs Calico with the pod network set to `10.244.0.0/16`, and waits until the node is `Ready`. Since Calico 3.30, its operator's resource definitions come in a separate file, `operator-crds.yaml`, which is installed first.
 
@@ -221,8 +226,10 @@ Check: `kubectl get nodes -o wide` lists all three nodes as `Ready` with their `
 
 Script: [`k8s/scripts/cluster-addons.sh`](k8s/scripts/cluster-addons.sh). Run `k8s/scripts/cluster-addons.sh` as `vaviles`.
 
-- **MetalLB** in layer-2 mode, with the pool `192.168.1.180`–`192.168.1.189`. A `LoadBalancer` service gets one of these LAN IPs, and the worker running it answers ARP for it.
-- **metrics-server**, so `kubectl top nodes` and `kubectl top pods` work. It skips verifying kubelets' self-signed serving certificates, which is the usual setting for kubeadm clusters.
+- **MetalLB** in layer-2 mode, with the pool `192.168.1.180`–`192.168.1.189` from [`k8s/manifests/addons/metallb-pool.yaml`](k8s/manifests/addons/metallb-pool.yaml). A `LoadBalancer` service gets one of these LAN IPs, and the worker running it answers ARP for it.
+- **metrics-server**, so `kubectl top nodes` and `kubectl top pods` work. It skips verifying kubelets' self-signed serving certificates, which is the usual setting for kubeadm clusters. The flag is added to the file before it's applied, so running the script again changes nothing.
+
+Like Step 4 with Calico, it downloads the upstream manifests and refuses any whose SHA-256 doesn't match [`k8s/config/upstream.sha256`](k8s/config/upstream.sha256), so the cluster only ever gets the exact files that were reviewed.
 
 ### Step 7: Deploy ORDS
 
@@ -238,6 +245,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 
 **What the script does:**
 
+0. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's ports 8443 and 8080, and can only reach DNS, the database port (1521) and HTTPS (443, for the APEX images download). Everything else is blocked.
 1. **Certificate.** Checks that it covers `ords.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret. The conversion matters: tested with this ORDS image, a PKCS#1 key (`BEGIN RSA PRIVATE KEY`, like `ssl/1apx.pem`) stops ORDS from starting.
 2. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
 3. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB). If the pod hasn't finished after 10 minutes (usually because the image can't be downloaded), the script shows the pod's events and stops.
@@ -250,7 +258,8 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
    - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, and memory limits (3 GiB for ORDS). The APEX images cache, `/var/cache/ords-apex` on each worker, is created by `node-prep.sh` and owned by that user.
    - **Rolling updates without dropped requests:** a stopping pod keeps serving for 10 seconds while the Service and MetalLB stop sending it new connections.
    - **Health checks** connect over HTTPS and send `Host: ords.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
-   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://ords.1apx.com/...`. It has client-IP session affinity, so APEX sessions stay on one pod.
+   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://ords.1apx.com/...`. It has client-IP session affinity, so APEX sessions stay on one pod. It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
+   - **Image pinned by digest** (`ORDS_IMAGE` is `...:26.2.3@sha256:...`), so the image can't change even if Oracle re-publishes the tag.
 
 **Rehearsed on k8-control (2026-10-15):** the pod's config script was run with `ords-settings.conf` and the real certificate, then ORDS 26.2.3 was started from it. ORDS served the full Sectigo chain, which verified cleanly against the public CAs. HTTP redirected to HTTPS, and the health checks behaved as described. The database login itself hasn't been tested, because `node.1apx.com` doesn't resolve from here.
 
@@ -268,18 +277,39 @@ On k8-control, as `vaviles`:
 - `kubectl logs -n ords deploy/ords` shows "HTTPS listening on host: 0.0.0.0 port: 8443" and no pool errors.
 - `curl -sI https://ords.1apx.com/apps/` returns a `302` to the APEX start page. Running `curl -vI` also shows the `*.1apx.com` certificate.
 - `kubectl top nodes` shows CPU and memory for each node.
+- Secrets are encrypted in etcd: `sudo crictl exec $(sudo crictl ps --name '^etcd$' -q) etcdctl --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key get /registry/secrets/ords/ords-tls | head -c 80 | od -c | head -3` shows `k8s:enc:secretbox:v1:key1`, not the certificate.
+- `sudo tail -1 /var/log/kubernetes/audit/audit.log` shows a recent API request.
 
 ### Running the cluster
 
-- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. It talks to etcd through containerd (`crictl`), so it works even when the API server is down, and checks each snapshot with `etcdutl snapshot status` before keeping it. To run it daily, copy it to `/usr/local/sbin` and add a cron line; the script's header shows both commands. Cron runs the root-owned copy, never the file in `vaviles`'s home, so re-run the `install` command after changing the script. Copy the backups off the VM, because they contain the cluster's private keys. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
+- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. It talks to etcd through containerd (`crictl`), so it works even when the API server is down, and checks each snapshot with `etcdutl snapshot status` before keeping it. To run it daily, copy it to `/usr/local/sbin` and add a cron line; the script's header shows both commands. Cron runs the root-owned copy, never the file in `vaviles`'s home, so re-run the `install` command after changing the script. Copy the backups off the VM, and keep them private: they contain the cluster's private keys and the key that decrypts its Secrets. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
 - **Certificates** that kubeadm creates expire after one year, and upgrading the control plane renews them. Check them with `sudo kubeadm certs check-expiration`.
-- **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets` first; the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh` and the version in `kubeadm-config.yaml`, and upgrade Calico when its tested versions require it.
+- **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets` first; the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh` and the version in `kubeadm-config.yaml`, and upgrade Calico when its tested versions require it. When you change Calico's, MetalLB's or metrics-server's version, update its lines in `k8s/config/upstream.sha256` too (the file's header shows how); `ci/validate.sh` fails until you do.
 - **OS updates.** `apt upgrade` is safe because the Kubernetes packages are held. Reboot one node at a time, draining workers first.
 - **Certificate renewal.** The `*.1apx.com` certificate expires on 2 January 2027. Put the renewed files in `ssl/` with the same names, or change `CERT_FILE`, `CHAIN_FILE` and `KEY_FILE`. Then run `deploy-ords.sh` again, which updates the `ords-tls` Secret and restarts the pods one at a time.
-- **ORDS upgrades.** Set `ORDS_IMAGE` to the new tag and `INSTALL_OR_UPGRADE_SCHEMA=true`, run `deploy-ords.sh`, then set it back to `false`. Upgrade the old ORDS server too, or retire it.
+- **ORDS upgrades.** Set `ORDS_IMAGE` to the new tag and its digest (the comment above it says where to find the digest) and `INSTALL_OR_UPGRADE_SCHEMA=true`, run `deploy-ords.sh`, then set it back to `false`. Upgrade the old ORDS server too, or retire it.
 - **Secrets.** Never commit passwords or keys to this repo; `ssl/` is git-ignored. To change the `ORDS_PUBLIC_USER` password, change it in the database, run `kubectl delete secret ords-db-runtime -n ords`, then run `deploy-ords.sh` again. The old ORDS server needs the new password too.
 - **Single control plane.** If k8-control is down, running ORDS pods keep serving, but you can't change the cluster until it's back. For high availability, add two more control-plane nodes behind `k8-control.1apx.com` (kubeadm supports this because the endpoint is a name), and restore from the etcd backups if needed.
 - **Starting over on a node.** `sudo kubeadm reset` removes Kubernetes state from a node. On the control plane, that deletes the cluster.
+
+## Validation and CI
+
+[`ci/validate.sh`](ci/validate.sh) checks the whole repo. Run it before every commit, as `vaviles`: `ci/validate.sh`, or `ci/validate.sh --offline` without internet access. It exits non-zero if any check fails. GitHub Actions runs it on every push and pull request ([`.github/workflows/validate.yml`](.github/workflows/validate.yml)).
+
+| Area | What it checks |
+|------|----------------|
+| Shell scripts | `bash -n` and ShellCheck on every script; every script is executable in git |
+| Kubernetes | The ORDS manifests rendered exactly as `deploy-ords.sh` applies them (with and without `DB_HOST_IP`), and the MetalLB pool, against the Kubernetes schemas for the cluster's version with kubeconform `-strict`. The kubeadm config with the real `kubeadm` of the same version. The audit policy's shape. `bash -n` on the scripts inside the manifests |
+| Consistency | Values repeated across files agree: Kubernetes version, pod CIDR, node IPs, DNS servers, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
+| Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, and Calico's Installation with our pod CIDR is valid |
+| Hygiene | LF line endings, no trailing whitespace, a final newline in every file |
+| Secrets | gitleaks over the whole git history; no key, certificate or kubeconfig file tracked |
+
+The tools (ShellCheck, kubeconform, kubeadm, gitleaks) are downloaded on first use, checked against pinned SHA-256s, and cached in `~/.cache/ubuntu-repo-tools`. The script also needs Python's yaml module (`python3-yaml`, installed on k8-control).
+
+Repo conventions: [`.gitattributes`](.gitattributes) stores text files with LF line endings, [`.editorconfig`](.editorconfig) sets the same for editors, and [`.gitignore`](.gitignore) keeps keys, certificates, kubeconfigs and etcd backups out of git.
+
+**On github.com** (needs the account's owner): under **Settings → Branches**, add a rule for `main` that requires the `validate` check to pass, so nothing unchecked lands on `main`. The workflow can't be run from k8-control, because `gh` isn't logged in; check its first run under the repo's **Actions** tab.
 
 ## GitHub access
 

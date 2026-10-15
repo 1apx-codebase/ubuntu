@@ -1,0 +1,11 @@
+# SHA-256 of every upstream manifest the scripts apply, one "<sha256>  <url>" per line.
+# The scripts refuse a download that doesn't match, so the cluster always gets exactly
+# the files reviewed here. After changing a version in a script, update its lines with:
+#   curl -fsSL <url> | sha256sum
+# ci/validate.sh checks that every version in the scripts is pinned here and, online,
+# that each hash still matches upstream.
+cb46786692404fb7955c6d31329c667d0dd8f1ff4821dc7869d0156c93d3a859  https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/operator-crds.yaml
+4e372754e4e1c3a61cf7c0ceb9bc9fff2f78aa6575dcadcb5ea4e716bb00dffa  https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/tigera-operator.yaml
+4fb598a7fce1ad1f8bbfb9004f5efcdb835082e92e06323cb7b8ce60260ed891  https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/custom-resources.yaml
+b0b9be2802f10aa32d45308b4457d06cde0c70544712c8d0cf5511657ffd2b69  https://raw.githubusercontent.com/metallb/metallb/v0.16.0/config/manifests/metallb-native.yaml
+1cec29a5267809306a2c6ec74a3e449abbb705b4a8beed0c8a1963910f72c79b  https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml

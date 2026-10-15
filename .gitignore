@@ -5,3 +5,13 @@ ssl/
 *.p12
 *.jks
 *.pfx
+
+# Cluster credentials and backups: kubeconfigs, etcd snapshots, /etc/kubernetes archives
+*.kubeconfig
+kubeconfig
+admin.conf
+etcd-*.db
+kubernetes-etc-*.tgz
+
+# Local environment files
+.env

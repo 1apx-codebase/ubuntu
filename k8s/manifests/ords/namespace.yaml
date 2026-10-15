@@ -1,0 +1,13 @@
+# Namespace for ORDS, applied by deploy-ords.sh.
+#
+# Pod Security: the pods meet the "restricted" level (non-root, no capabilities,
+# seccomp RuntimeDefault, no privilege escalation) except for one hostPath volume,
+# the APEX images cache on each worker. Both "baseline" and "restricted" forbid
+# hostPath, so neither can be enforced here; "warn" would print the same expected
+# warning on every deploy.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ords
+  labels:
+    app.kubernetes.io/part-of: ords

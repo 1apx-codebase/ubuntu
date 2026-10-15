@@ -3,14 +3,18 @@
 # Oracle database and serving HTTPS with the *.1apx.com certificate.
 # Run on k8-control as vaviles after cluster-addons.sh: ./deploy-ords.sh
 # Safe to re-run; re-run after changing ords-settings.conf or renewing the certificate.
+# "./deploy-ords.sh --render <manifest>" only prints a manifest as it would be applied
+# (ci/validate.sh uses it).
 set -euo pipefail
 
 NAMESPACE=ords
-# Use the tag that matches the ORDS version installed in the database (the
-# preflight check reports it). Tags: container-registry.oracle.com/database/ords
-ORDS_IMAGE=container-registry.oracle.com/database/ords:26.2.3
+# Use the tag that matches the ORDS version installed in the database (the preflight
+# check reports it), pinned by digest so the image can't change under the same tag.
+# Tags: container-registry.oracle.com/database/ords. For a new tag's digest, see the
+# tag on that page, or pull it on a worker and run: sudo crictl images --digests
+ORDS_IMAGE=container-registry.oracle.com/database/ords:26.2.3@sha256:9730c42b015624aec8b677c3bd530fe56443b1fa8efa87b7ab09d6e80e9e5daa
 ORDS_HOSTNAME=ords.1apx.com       # needs a DNS record pointing at LB_IP
-LB_IP=192.168.1.180               # from the MetalLB range in cluster-addons.sh
+LB_IP=192.168.1.180               # in the MetalLB pool, manifests/addons/metallb-pool.yaml
 
 # Existing Oracle database (from the old server's pool.xml)
 DB_HOST=node.1apx.com
@@ -37,15 +41,21 @@ KEY_FILE=1apx.key                 # private key (any format; converted to PKCS#8
 
 K8S=$(cd "$(dirname "$0")/.." && pwd)   # the k8s/ folder
 MANIFESTS="$K8S/manifests/ords"
-[ "$(id -u)" -ne 0 ] || { echo "Run as vaviles, not root." >&2; exit 1; }
-ORDS_TAG=${ORDS_IMAGE##*:}
+ORDS_TAG=${ORDS_IMAGE%@*}         # without the digest
+ORDS_TAG=${ORDS_TAG##*:}          # 26.2.3
 HOST_ALIASES="[]"
 [ -z "$DB_HOST_IP" ] || HOST_ALIASES="[{ip: \"$DB_HOST_IP\", hostnames: [\"$DB_HOST\"]}]"
 CONFIG_HASH=                      # set in step 7
 render() {
   sed -e "s|__ORDS_IMAGE__|$ORDS_IMAGE|g" -e "s|__ORDS_HOSTNAME__|$ORDS_HOSTNAME|g" -e "s|__LB_IP__|$LB_IP|g" \
-      -e "s|__CONFIG_HASH__|$CONFIG_HASH|g" -e "s|hostAliases: \[\]|hostAliases: $HOST_ALIASES|" "$1"
+      -e "s|__DB_PORT__|$DB_PORT|g" -e "s|__CONFIG_HASH__|$CONFIG_HASH|g" \
+      -e "s|hostAliases: \[\]|hostAliases: $HOST_ALIASES|" "$1"
 }
+if [ "${1:-}" = --render ]; then
+  render "${2:?usage: $0 --render <manifest>}"
+  exit 0
+fi
+[ "$(id -u)" -ne 0 ] || { echo "Run as vaviles, not root." >&2; exit 1; }
 if [ -z "$DB_HOST_IP" ] && ! getent hosts "$DB_HOST" >/dev/null; then
   echo "$DB_HOST doesn't resolve. Add a DNS record for it, or set DB_HOST_IP in this script." >&2
   exit 1
@@ -79,7 +89,8 @@ secret_from_value() {   # secret_from_value name key value (keeps the value off 
   rm -f "$work/$2"
 }
 
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f "$MANIFESTS/namespace.yaml"
+render "$MANIFESTS/network-policy.yaml" | kubectl apply -f -
 
 # 1. TLS certificate: check it, then store chain + PKCS#8 key as the ords-tls Secret
 for f in "$CERT_FILE" "$CHAIN_FILE" "$KEY_FILE"; do

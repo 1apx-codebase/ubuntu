@@ -1,0 +1,20 @@
+# MetalLB's LAN address pool, applied by cluster-addons.sh. LoadBalancer services get
+# their IP from this range, and the worker running the service answers ARP for it.
+# Reserve the range on the router (outside its DHCP pool). ORDS uses 192.168.1.180.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: lan-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.1.180-192.168.1.189
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: lan-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - lan-pool
