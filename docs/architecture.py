@@ -215,8 +215,8 @@ POD_Y = NS[1] + 36
 for vm in (w1, w2):
     x, _, w, _ = vm
     labeled_box(x + 30, POD_Y, w - 60, 160,
-                ["ORDS pod", "ords:26.2.3 (pinned by digest)", "init: apex-images, config",
-                 "ords serve · HTTPS on port 8443", "UID 54321 · read-only root filesystem"],
+                ["ORDS pod", "ords:26.2.0 (pinned by digest)", "init: db-check, apex-images, config",
+                 "ords serve (serve only) · HTTPS 8443", "UID 54321 · read-only root filesystem"],
                 C["pod"], C["podline"], r=8, size=BODY, gap=25)
     for j, label in enumerate(["kubelet · containerd · kube-proxy", "Calico node · MetalLB speaker",
                                "CPU type host · x86-64-v3 (AVX2)"]):

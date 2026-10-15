@@ -1,26 +1,25 @@
-# ORDS: two stateless replicas, normally one per worker, behind a MetalLB LAN IP, serving HTTPS
-# with the *.1apx.com certificate. Applied by deploy-ords.sh, which fills in the image,
-# host name, LoadBalancer IP and config hash (the double-underscore placeholders).
+# ORDS for the portal: stateless replicas behind a MetalLB LAN IP, serving HTTPS with the
+# *.1apx.com certificate. ORDS only serves here: nothing in this pod installs or upgrades the
+# ORDS schema in the database. That's done out of band (README, "The database"), and the
+# db-check step refuses to start ORDS against a schema that doesn't match its version.
 #
 # Each pod builds its own ORDS config in an emptyDir at start, from:
-#   ords-db ConfigMap        database host/port/service and APEX version
-#   ords-settings ConfigMap  ords-settings.conf (settings copied from the old server)
-#   ords-db-runtime Secret   ORDS_PUBLIC_USER password
-#   ords-tls Secret          certificate chain and private key
-# No shared storage is needed, and the SYS password is never given to these pods.
-# Every container has a read-only root filesystem: they write only to their emptyDir volumes
-# (config, APEX images, /tmp), so the namespace can enforce Pod Security "restricted".
+#   ords-db ConfigMap        the environment's database and host values (overlay's ords.env)
+#   ords-settings ConfigMap  base ords-settings.conf plus the overlay's ords-pool.conf
+#   ords-java ConfigMap      Java options: database encryption
+#   ords-db-runtime Secret   ORDS_PUBLIC_USER password (created by deploy-ords.sh)
+#   ords-tls Secret          certificate chain and private key (created by deploy-ords.sh)
+# The values marked "set by the environment" are placeholders that the environment component
+# (environment/kustomization.yaml) replaces. Every container has a read-only root filesystem.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ords
-  namespace: ords
   labels:
     app: ords
     app.kubernetes.io/name: ords
-    app.kubernetes.io/part-of: ords
 spec:
-  replicas: 2
+  replicas: 1                       # each overlay sets its own (replicas: in its kustomization.yaml)
   revisionHistoryLimit: 5
   selector:
     matchLabels:
@@ -35,14 +34,14 @@ spec:
       labels:
         app: ords
         app.kubernetes.io/name: ords
-        app.kubernetes.io/part-of: ords
       annotations:
-        # Hash of the ConfigMaps and Secrets below: a change replaces the pods
-        1apx.com/config-hash: "__CONFIG_HASH__"
         # kubectl logs and exec use the ORDS container unless told otherwise (-c access-log)
         kubectl.kubernetes.io/default-container: ords
     spec:
-      hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
+      # The database host name, resolved here rather than through DNS
+      hostAliases:
+        - ip: 192.0.2.1                   # set by the environment (DB_IP)
+          hostnames: ["db.set-by-environment.invalid"]   # set by the environment (DB_HOST)
       automountServiceAccountToken: false   # ORDS doesn't use the Kubernetes API
       securityContext:
         runAsNonRoot: true
@@ -60,25 +59,93 @@ spec:
             matchLabels:
               app: ords
       initContainers:
-        # APEX static images (/i/), downloaded from Oracle into this pod's apex-images volume
-        # each time the pod starts (about 290 MB; 480 MB unpacked)
+        # Checks the database before ORDS starts: logs in as ORDS_PUBLIC_USER, refuses to go on
+        # if the ORDS schema there doesn't match this image's ORDS version (ORDS_VER, set by the
+        # image), and records the APEX version for the next step. If it fails, the pod never
+        # becomes ready, so during a rollout the old pods keep serving.
+        - name: db-check
+          image: container-registry.oracle.com/database/ords
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
+              out=$(sql -S -L /nolog 2>&1 <<SQL
+              whenever sqlerror exit failure
+              connect ORDS_PUBLIC_USER/"${pw}"@//${DB_HOST}:${DB_PORT}/${DB_SERVICE}
+              set heading off feedback off pagesize 0 verify off
+              select 'LOGIN_OK' from dual;
+              whenever sqlerror continue
+              select 'ORDS_VERSION=' || version from ords_metadata.ords_version;
+              select 'APEX_VERSION=' || version_no from apex_release;
+              exit
+              SQL
+              )
+              if ! grep -q '^LOGIN_OK' <<<"$out"; then
+                echo "$out" | tail -20
+                echo "Can't log in to $DB_HOST:$DB_PORT/$DB_SERVICE as ORDS_PUBLIC_USER (see above)."
+                exit 1
+              fi
+              db_ords=$(sed -n 's/^ORDS_VERSION=\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' <<<"$out" | head -1)
+              db_apex=$(sed -n 's/^APEX_VERSION=\([0-9]*\.[0-9]*\).*/\1/p' <<<"$out" | head -1)
+              if [ "$db_ords" != "$ORDS_VER" ]; then
+                echo "The database's ORDS schema is ${db_ords:-not installed}, but this image is ORDS $ORDS_VER."
+                echo "ORDS only serves here and never installs or upgrades the schema: have it installed"
+                echo "or upgraded out of band, or set the overlay's image to the schema's version."
+                exit 1
+              fi
+              apex=${APEX_VERSION:-$db_apex}
+              if [ -n "$APEX_VERSION" ] && [ -n "$db_apex" ] && [ "$db_apex" != "$APEX_VERSION" ]; then
+                echo "WARNING: APEX_VERSION is $APEX_VERSION, but the database has APEX $db_apex."
+              fi
+              printf '%s' "$apex" > /apex-images/.apex-version
+              echo "Logged in. ORDS schema $db_ords matches the image. APEX: ${apex:-none}."
+          env:
+            - name: JDK_JAVA_OPTIONS
+              value: "$(DB_JAVA_OPTS)"
+          envFrom:
+            - configMapRef:
+                name: ords-db
+            - configMapRef:
+                name: ords-java
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: runtime
+              mountPath: /run/secrets/ords-runtime
+              readOnly: true
+            - name: apex-images
+              mountPath: /apex-images
+            - name: tmp
+              mountPath: /tmp
+            - name: home                # SQLcl keeps its history and settings in the home folder
+              mountPath: /home/oracle
+        # APEX static images (/i/) for the version db-check found (or APEX_VERSION), downloaded
+        # from Oracle into this pod's apex-images volume (about 290 MB; 480 MB unpacked)
         - name: apex-images
-          image: __ORDS_IMAGE__
+          image: container-registry.oracle.com/database/ords
           command: ["/bin/bash", "-c"]
           args:
             - |
               set -euo pipefail
-              if [ -z "${APEX_VERSION:-}" ]; then echo "APEX_VERSION not set, no APEX images"; exit 0; fi
+              v=$(cat /apex-images/.apex-version)
+              if [ -z "$v" ]; then echo "No APEX version, so no APEX images"; exit 0; fi
               cd /apex-images
-              echo "Downloading APEX $APEX_VERSION images..."
-              curl -fsSL --retry 3 -o apex.zip "https://download.oracle.com/otn_software/apex/apex_${APEX_VERSION}.zip"
+              echo "Downloading APEX $v images..."
+              curl -fsSL --retry 3 -o apex.zip "https://download.oracle.com/otn_software/apex/apex_${v}.zip"
               if command -v unzip >/dev/null; then unzip -q apex.zip 'apex/images/*'; else jar xf apex.zip apex/images; fi
               rm -f apex.zip
               chmod -R a+rX apex/images
-              echo "APEX $APEX_VERSION images ready"
-          envFrom:
-            - configMapRef:
-                name: ords-db
+              echo "APEX $v images ready"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -97,7 +164,7 @@ spec:
               mountPath: /tmp
         # Writes the ORDS config for this pod
         - name: config
-          image: __ORDS_IMAGE__
+          image: container-registry.oracle.com/database/ords
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -106,14 +173,17 @@ spec:
               $c set db.hostname "$DB_HOST"
               $c set db.port "$DB_PORT"
               $c set db.servicename "$DB_SERVICE"
-              grep -vE '^[[:space:]]*(#|$)' /etc/ords-settings/ords-settings.conf | while read -r key value; do
-                $c set "$key" "$value"
+              # Every settings file: the base's ords-settings.conf, then the overlay's ords-pool.conf
+              for f in /etc/ords-settings/*.conf; do
+                grep -vE '^[[:space:]]*(#|$)' "$f" | while read -r key value; do
+                  $c set "$key" "$value"
+                done
               done
               $c set standalone.http.port 8080
               $c set standalone.https.port 8443
               $c set standalone.https.cert /run/secrets/ords-tls/tls.crt
               $c set standalone.https.cert.key /run/secrets/ords-tls/tls.key
-              if [ -n "${APEX_VERSION:-}" ]; then
+              if [ -s /opt/oracle/apex-images/.apex-version ]; then
                 $c set standalone.static.path /opt/oracle/apex-images/apex/images
               fi
               # https://<host>/ (no path) sends users on to APEX at /apps/
@@ -154,10 +224,13 @@ spec:
             - name: runtime
               mountPath: /run/secrets/ords-runtime
               readOnly: true
+            - name: apex-images
+              mountPath: /opt/oracle/apex-images
+              readOnly: true
         # Sidecar (runs alongside ORDS): prints ORDS's access log, one file a day, so
         # "kubectl logs -c access-log" shows every request. Follows the newest file.
         - name: access-log
-          image: __ORDS_IMAGE__
+          image: container-registry.oracle.com/database/ords
           restartPolicy: Always
           command: ["/bin/bash", "-c"]
           args:
@@ -191,17 +264,20 @@ spec:
               readOnly: true
       containers:
         - name: ords
-          image: __ORDS_IMAGE__
-          # Runs ORDS directly instead of the image's entrypoint, which would switch
-          # Database Actions, REST-enabled SQL and the MongoDB API on at every start.
+          image: container-registry.oracle.com/database/ords
+          # "ords serve" only: it never installs or upgrades the ORDS schema. Run directly, not
+          # through the image's entrypoint, which would install the schema when given a SYS
+          # password and switch Database Actions, REST-enabled SQL and the MongoDB API on.
           command: ["ords", "--config", "/etc/ords/config", "serve"]
           env:
             # The ords launcher sets no heap size, so Java would default to a quarter of
             # the memory limit (768 MiB of 3 GiB). Give the heap 75%; the rest is for
-            # Java's own memory and threads. deploy-ords.sh adds the database encryption
-            # settings (DB_ENCRYPTION).
+            # Java's own memory and threads. DB_JAVA_OPTS: database encryption (ords-java).
             - name: JDK_JAVA_OPTIONS
-              value: "-XX:MaxRAMPercentage=75 __DB_JAVA_OPTS__"
+              value: "-XX:MaxRAMPercentage=75 $(DB_JAVA_OPTS)"
+          envFrom:
+            - configMapRef:
+                name: ords-java
           ports:
             - name: https
               containerPort: 8443
@@ -234,7 +310,7 @@ spec:
               port: https
               httpHeaders:
                 - name: Host
-                  value: __ORDS_HOSTNAME__
+                  value: host.set-by-environment.invalid   # set by the environment (ORDS_HOSTNAME)
             periodSeconds: 10
             failureThreshold: 30     # up to 5 minutes
           # The landing page returns 571 when ORDS can't reach the database,
@@ -246,7 +322,7 @@ spec:
               port: https
               httpHeaders:
                 - name: Host
-                  value: __ORDS_HOSTNAME__
+                  value: host.set-by-environment.invalid   # set by the environment (ORDS_HOSTNAME)
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -278,6 +354,9 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi           # Java's temporary files, such as large uploads
+        - name: home
+          emptyDir:
+            sizeLimit: 64Mi
         - name: access-log
           emptyDir:
             sizeLimit: 1Gi           # two days of access log
@@ -291,71 +370,3 @@ spec:
           secret:
             secretName: ords-tls
             defaultMode: 0440        # readable by the oracle group (fsGroup), not others
----
-# Node drains and upgrades take down at most one ORDS pod at a time. With two or more pods,
-# the rest keep serving; with one, a drain isn't blocked (minAvailable: 1 would block it).
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: ords
-  namespace: ords
-  labels:
-    app.kubernetes.io/name: ords
-    app.kubernetes.io/part-of: ords
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app: ords
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ords
-  namespace: ords
-  labels:
-    app.kubernetes.io/name: ords
-    app.kubernetes.io/part-of: ords
-  annotations:
-    metallb.io/loadBalancerIPs: __LB_IP__
-spec:
-  type: LoadBalancer
-  # MetalLB answers on the LAN IP directly, so no NodePorts need to be opened
-  allocateLoadBalancerNodePorts: false
-  # Who may connect to the LoadBalancer IP (enforced by kube-proxy): Cloudflare, which proxies
-  # www.1apx.com from the internet through the router's port forward, and the three nodes,
-  # for testing from k8-control. Anyone else who finds the public IP is refused, so
-  # Cloudflare can't be bypassed. Not the whole LAN: some routers rewrite a forwarded
-  # connection's source to their own LAN address, which would let anyone past this list.
-  # Cloudflare's list: https://www.cloudflare.com/ips-v4 (ci/validate.sh checks this copy
-  # against it, and the node addresses against node-prep.sh).
-  loadBalancerSourceRanges:
-    - 192.168.1.170/32       # k8-control
-    - 192.168.1.171/32       # k8-worker-1
-    - 192.168.1.172/32       # k8-worker-2
-    - 173.245.48.0/20        # Cloudflare, from here on
-    - 103.21.244.0/22
-    - 103.22.200.0/22
-    - 103.31.4.0/22
-    - 141.101.64.0/18
-    - 108.162.192.0/18
-    - 190.93.240.0/20
-    - 188.114.96.0/20
-    - 197.234.240.0/22
-    - 198.41.128.0/17
-    - 162.158.0.0/15
-    - 104.16.0.0/13
-    - 104.24.0.0/14
-    - 172.64.0.0/13
-    - 131.0.72.0/22
-  selector:
-    app: ords
-  # APEX keeps session state in the database, so either pod can serve any request.
-  # Affinity is by connecting address, which for internet users is a Cloudflare edge
-  # server: it still tends to keep a user on one pod with warm caches, and nothing
-  # breaks when it changes.
-  sessionAffinity: ClientIP
-  ports:
-    - name: https
-      port: 443
-      targetPort: https

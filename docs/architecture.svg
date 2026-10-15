@@ -58,9 +58,9 @@
   <rect x="85" y="792" width="830" height="214" rx="10" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="6 4"/>
   <rect x="100" y="828" width="360" height="160" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
   <text x="280.0" y="864.0" font-size="17" text-anchor="middle" font-weight="bold">ORDS pod</text>
-  <text x="280.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
-  <text x="280.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
-  <text x="280.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS on port 8443</text>
+  <text x="280.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.0 (pinned by digest)</text>
+  <text x="280.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: db-check, apex-images, config</text>
+  <text x="280.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve (serve only) · HTTPS 8443</text>
   <text x="280.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · read-only root filesystem</text>
   <rect x="90" y="1022" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="280.0" y="1045.2" font-size="15" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>
@@ -70,9 +70,9 @@
   <text x="280.0" y="1137.2" font-size="15" text-anchor="middle" fill="#4b5563">CPU type host · x86-64-v3 (AVX2)</text>
   <rect x="540" y="828" width="360" height="160" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
   <text x="720.0" y="864.0" font-size="17" text-anchor="middle" font-weight="bold">ORDS pod</text>
-  <text x="720.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
-  <text x="720.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
-  <text x="720.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS on port 8443</text>
+  <text x="720.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.0 (pinned by digest)</text>
+  <text x="720.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: db-check, apex-images, config</text>
+  <text x="720.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve (serve only) · HTTPS 8443</text>
   <text x="720.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · read-only root filesystem</text>
   <rect x="530" y="1022" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="720.0" y="1045.2" font-size="15" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>

@@ -3,6 +3,23 @@
 Significant changes to the cluster and to how it's run, newest first. `git log` has the details.
 Add an entry for each change that matters to someone running the cluster: what changed, and why.
 
+## 2026-10-15: Kustomize layout; ORDS serve-only
+
+- **Kustomize, three levels:** `k8s/common` (namespace with Pod Security "restricted", a
+  deny-all network policy except DNS) -> `k8s/portal/base` (ORDS) -> `k8s/portal/prod`
+  (production's values, pool size, replicas and image). `dev` and `uat` are placeholders.
+  Each environment's values are in one file, `ords.env`; settings changes roll the pods
+  through content-hashed ConfigMap names.
+- **ORDS only serves:** the schema install/upgrade Job, the SYS password handling and
+  `INSTALL_OR_UPGRADE_SCHEMA` are gone. Schema installs and upgrades are done out of band by
+  a DBA. A `db-check` step in each pod replaces the preflight pod: it refuses to start ORDS
+  against a schema of another version, and finds the APEX version.
+- **Database address:** set once per environment (`DB_IP`, `192.168.1.110` for production); the
+  pods map the database's name to it themselves, so they no longer depend on DNS for it.
+- **ORDS 26.2.0:** the database's ORDS schema is 26.2.0 (and its APEX 26.1), so production now
+  runs the 26.2.0 image, not 26.2.3. Tested against the database: login with encryption
+  required, the version check, the APEX 26.1 images, and APEX's sign-in page through ORDS.
+
 ## 2026-10-15: Initial build
 
 The cluster and ORDS deployment were designed, reviewed and documented in one day, before the

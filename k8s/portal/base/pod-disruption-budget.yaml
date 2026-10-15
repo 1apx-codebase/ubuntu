@@ -1,0 +1,13 @@
+# Node drains and upgrades take down at most one ORDS pod at a time. With two or more pods,
+# the rest keep serving; with one, a drain isn't blocked (minAvailable: 1 would block it).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ords
+  labels:
+    app.kubernetes.io/name: ords
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: ords

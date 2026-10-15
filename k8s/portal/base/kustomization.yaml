@@ -1,0 +1,26 @@
+# Level 2: the portal application, ORDS serving APEX, the same in every environment.
+# Environment overlays (../dev, ../uat, ../prod) add their own values (ords.env, through the
+# component in ./environment), connection pool size, replica count and image version.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../common
+  - deployment.yaml
+  - service.yaml
+  - pod-disruption-budget.yaml
+  - network-policy.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: portal
+configMapGenerator:
+  # ORDS settings shared by every environment; overlays add a pool size file (behavior: merge).
+  # The generated name ends in a hash of the contents, so a change rolls the pods.
+  - name: ords-settings
+    files:
+      - ords-settings.conf
+  # Java options for every container that connects to the database: the Oracle JDBC driver
+  # requires Native Network Encryption (AES) and checksums (SHA-2), or refuses to connect.
+  # An overlay can merge DB_JAVA_OPTS= (empty) to turn it off, only if its database rejects it.
+  - name: ords-java
+    literals:
+      - DB_JAVA_OPTS=-Doracle.net.encryption_client=REQUIRED -Doracle.net.encryption_types_client=(AES256,AES192,AES128) -Doracle.net.crypto_checksum_client=REQUIRED -Doracle.net.crypto_checksum_types_client=(SHA512,SHA384,SHA256)

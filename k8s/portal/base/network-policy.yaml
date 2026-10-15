@@ -1,0 +1,29 @@
+# What ORDS pods may do, on top of the namespace's default (../../common/network-policy.yaml:
+# nothing but DNS). Enforced by Calico.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ords
+spec:
+  podSelector:
+    matchLabels:
+      app: ords
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    # HTTPS from users, through the Service
+    - ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    # The Oracle database: only its own address, on its port. The address is set by the
+    # environment (DB_IP); the port must match DB_PORT in its ords.env (ci/validate.sh checks)
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.1/32
+      ports:
+        - protocol: TCP
+          port: 1521
+    # HTTPS, for the APEX images download from download.oracle.com
+    - ports:
+        - protocol: TCP
+          port: 443

@@ -1,0 +1,30 @@
+# Level 3: the production environment, https://www.1apx.com/. Deploy it with
+# k8s/scripts/deploy-ords.sh prod (or just deploy-ords.sh), which also creates the Secrets.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ords
+resources:
+  - ../base
+components:
+  - ../base/environment
+configMapGenerator:
+  # This environment's values (database, host name, MetalLB address)
+  - name: ords-db
+    envs:
+      - ords.env
+  # Connection pool size for this environment's number of pods
+  - name: ords-settings
+    behavior: merge
+    files:
+      - ords-pool.conf
+replicas:
+  - name: ords
+    count: 2
+# The ORDS image: the tag must match the ORDS schema version installed in the database (the
+# db-check step refuses to start otherwise), pinned by digest so it can't change under the tag.
+# For a new tag's digest, see the tag at container-registry.oracle.com/database/ords, or pull
+# it on a worker and run: sudo crictl images --digests
+images:
+  - name: container-registry.oracle.com/database/ords
+    newTag: "26.2.0"              # the database's ORDS schema is 26.2.0 (checked 2026-10-15)
+    digest: sha256:6c510faf38965e2901b6bbd5ecf179f15af6909481de3e65446505d6d4d1eba0

@@ -1,0 +1,12 @@
+# Level 1: what every application namespace in this cluster gets, whatever runs in it:
+# the namespace itself, with Pod Security "restricted" enforced, and a network policy that
+# blocks all traffic except DNS. Each application's base adds what it needs on top, and
+# each environment overlay names the namespace (namespace: in its kustomization.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - network-policy.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize

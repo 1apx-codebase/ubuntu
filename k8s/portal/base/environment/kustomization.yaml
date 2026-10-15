@@ -1,0 +1,32 @@
+# Copies each environment's values from its ords-db ConfigMap (generated from the overlay's
+# ords.env) to the places that need them as literal values. Every overlay includes it:
+#   components: [../base/environment]
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+replacements:
+  # The database's address: the pods' /etc/hosts entry for DB_HOST, so they never depend on
+  # DNS for it, and the only address the network policy lets them reach on the database port
+  - source: {kind: ConfigMap, name: ords-db, fieldPath: data.DB_IP}
+    targets:
+      - select: {kind: Deployment, name: ords}
+        fieldPaths: [spec.template.spec.hostAliases.0.ip]
+      - select: {kind: NetworkPolicy, name: ords}
+        fieldPaths: [spec.egress.0.to.0.ipBlock.cidr]
+        options: {delimiter: "/", index: 0}
+  - source: {kind: ConfigMap, name: ords-db, fieldPath: data.DB_HOST}
+    targets:
+      - select: {kind: Deployment, name: ords}
+        fieldPaths: [spec.template.spec.hostAliases.0.hostnames.0]
+  # The public host name: the health checks send it, because ORDS refuses HTTPS requests for
+  # a host its certificate doesn't cover
+  - source: {kind: ConfigMap, name: ords-db, fieldPath: data.ORDS_HOSTNAME}
+    targets:
+      - select: {kind: Deployment, name: ords}
+        fieldPaths:
+          - spec.template.spec.containers.[name=ords].startupProbe.httpGet.httpHeaders.[name=Host].value
+          - spec.template.spec.containers.[name=ords].readinessProbe.httpGet.httpHeaders.[name=Host].value
+  # The Service's MetalLB address
+  - source: {kind: ConfigMap, name: ords-db, fieldPath: data.LB_IP}
+    targets:
+      - select: {kind: Service, name: ords}
+        fieldPaths: ["metadata.annotations.[metallb.io/loadBalancerIPs]"]

@@ -1,0 +1,23 @@
+# Default for every pod in the namespace, enforced by Calico: all traffic in and out is
+# blocked, except DNS lookups through CoreDNS. Applications add policies for what they need;
+# Kubernetes allows a connection if any policy allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

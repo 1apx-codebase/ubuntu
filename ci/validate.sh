@@ -16,6 +16,7 @@ cd "$ROOT"
 
 failed=0
 pass() { echo "ok    $*"; }
+note() { echo "note  $*"; }        # worth knowing, but not a failure
 fail() { echo "FAIL  $*" >&2; failed=1; }
 # check <description> <command...>: run a check and report it
 check() { local d=$1; shift; if "$@"; then pass "$d"; else fail "$d"; fi; }
@@ -45,15 +46,22 @@ K8S_VERSION=$(var "$K8S/scripts/node-prep.sh" K8S_VERSION)
 SHELLCHECK=$(tool shellcheck https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198)
 KUBECONFORM=$(tool kubeconform https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883)
 GITLEAKS=$(tool gitleaks https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb)
-# kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own
-# hash, which is fetched only the first time (the cached binary is kept per version)
-KUBEADM_URL="https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/kubeadm"
-KUBEADM=$(find "$TOOLS" -path "$TOOLS/kubeadm-*" -name kubeadm -type f 2>/dev/null \
-  | while read -r k; do [ "$("$k" version -o short 2>/dev/null)" = "v$K8S_VERSION" ] && echo "$k"; done | head -1)
-if [ -z "$KUBEADM" ]; then
-  KUBEADM_SHA=$(curl -fsSL "$KUBEADM_URL.sha256")
-  KUBEADM=$(tool kubeadm "$KUBEADM_URL" "$KUBEADM_SHA")
-fi
+# kubeadm and kubectl (whose built-in Kustomize builds the overlays) in the version the
+# cluster uses (node-prep.sh), checked against Kubernetes' published hash on first use and
+# then cached per version
+k8s_bin() {
+  local dir="$TOOLS/$1-v$K8S_VERSION" url="https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/$1"
+  if [ ! -x "$dir/$1" ]; then
+    mkdir -p "$dir"
+    curl -fsSL "$url" -o "$dir/download"
+    echo "$(curl -fsSL "$url.sha256")  $dir/download" | sha256sum -c --quiet - \
+      || { echo "$url doesn't match its published SHA-256" >&2; exit 1; }
+    install -m 0755 "$dir/download" "$dir/$1" && rm -f "$dir/download"
+  fi
+  echo "$dir/$1"
+}
+KUBEADM=$(k8s_bin kubeadm)
+KUBECTL=$(k8s_bin kubectl)
 # Arimo (Arial's metrics) for docs/architecture.py, pinned to a google/fonts commit
 ARIMO=$(tool arimo.ttf https://raw.githubusercontent.com/google/fonts/d7b3b07542b00e0ec7c48886d305eb8f08ef89d5/ofl/arimo/Arimo%5Bwght%5D.ttf e43898b143ec826ac8cb4034816458a7047fbe0836558de2a1f8c6223ae3e0ca)
 python3 -c 'import yaml' 2>/dev/null || { echo "Needs Python's yaml module (apt install python3-yaml)." >&2; exit 1; }
@@ -75,20 +83,36 @@ done < <(git ls-files -s '*.sh')
 
 echo "== Kubernetes manifests"
 mkdir -p "$work/rendered"
-# ORDS manifests exactly as deploy-ords.sh applies them, with and without DB_HOST_IP
-sed 's/^DB_HOST_IP=.*/DB_HOST_IP=10.0.0.5/' "$K8S/scripts/deploy-ords.sh" > "$work/deploy-ords-hostalias.sh"
-for m in "$K8S"/manifests/ords/*.yaml; do
-  n=$(basename "$m" .yaml)
-  bash "$K8S/scripts/deploy-ords.sh" --render "$m" > "$work/rendered/$n.yaml"
-  bash "$work/deploy-ords-hostalias.sh" --render "$m" > "$work/rendered/$n-hostalias.yaml"
+# Every portal environment with a kustomization.yaml, built as deploy-ords.sh builds it
+# (common -> portal/base -> portal/<env>). An environment that isn't set up yet holds only
+# its README.md.
+envs=()
+for d in "$K8S"/portal/*/; do
+  e=$(basename "$d")
+  [ "$e" = base ] && continue
+  if [ -f "$d/kustomization.yaml" ]; then
+    envs+=("$e")
+  elif [ "$(ls -A "$d")" = README.md ]; then
+    pass "portal/$e: placeholder, not set up yet"
+  else
+    fail "portal/$e has files but no kustomization.yaml"
+  fi
 done
-if grep -l '__[A-Z_]*__' "$work"/rendered/*.yaml; then fail "placeholders left after rendering"; fi
+[ "${#envs[@]}" -gt 0 ] || fail "no portal environment has a kustomization.yaml"
+build() { "$KUBECTL" kustomize "$K8S/portal/$1" > "$work/rendered/$1.yaml"; }
+for e in "${envs[@]}"; do
+  check "kustomize build: portal/$e" build "$e"
+  # Every "set by the environment" placeholder in the base must have been replaced
+  if grep -nE 'set-by-environment|192\.0\.2\.1' "$work/rendered/$e.yaml"; then fail "portal/$e: placeholders left (above)"; fi
+  [ -n "$(sed -n 's/^DB_IP=//p' "$K8S/portal/$e/ords.env")" ] \
+    || note "portal/$e: DB_IP in ords.env isn't set yet; deploy-ords.sh needs it"
+done
 # CRD schemas (MetalLB, Calico) from datreeio/CRDs-catalog, pinned to a commit
 CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 # Schemas are cached, so later runs (and --offline) don't need to download them
 mkdir -p "$TOOLS/kubeconform-cache"
 KUBECONFORM=("$KUBECONFORM" -cache "$TOOLS/kubeconform-cache")
-check "kubeconform: ORDS manifests (Kubernetes $K8S_VERSION schemas)" "${KUBECONFORM[@]}" -strict -summary \
+check "kubeconform: portal environments (Kubernetes $K8S_VERSION schemas)" "${KUBECONFORM[@]}" -strict -summary \
   -kubernetes-version "$K8S_VERSION" -schema-location default "$work"/rendered/*.yaml
 # MetalLB's resources are CRDs: only the CRD catalog has their schemas (asking the default
 # location first would fail offline instead of falling through to the cached catalog)
@@ -145,8 +169,7 @@ for b in bad:
 sys.exit(1 if bad else 0)
 PY
 # Bash embedded in the manifests
-embedded=("$work"/rendered/ords.yaml "$work"/rendered/ords-preflight.yaml "$work"/rendered/ords-install-job.yaml)
-if python3 - "${embedded[@]}" <<'PY'; then pass "bash -n on the scripts in the manifests"; else fail "embedded scripts"; fi
+if python3 - "$work"/rendered/*.yaml <<'PY'; then pass "bash -n on the scripts in the manifests"; else fail "embedded scripts"; fi
 import subprocess, sys, yaml
 bad = 0
 for f in sys.argv[1:]:
@@ -193,21 +216,35 @@ same "Personal login" "$(var "$ROOT/apply-changes.sh" USER_NAME)" "$(var "$ROOT/
   "$(var "$K8S/scripts/proxmox-create-workers.sh" CONTROL_LOGIN | cut -d@ -f1)" \
   "$(sed -n 's|^ *\([^:]*\):/home/\1/\.claude/settings\.json$|\1|p' "$ROOT/claude-classic-tui.sh")"
 # The namespace's Pod Security version is the cluster's minor version
-mapfile -t psa_versions < <(sed -n 's/^ *pod-security\.kubernetes\.io\/[a-z]*-version: //p' "$K8S/manifests/ords/namespace.yaml")
+mapfile -t psa_versions < <(sed -n 's/^ *pod-security\.kubernetes\.io\/[a-z]*-version: //p' "$K8S/common/namespace.yaml")
 [ "${#psa_versions[@]}" = 3 ] || fail "namespace.yaml should have 3 Pod Security version labels, has ${#psa_versions[@]}"
 same "Pod Security version labels" "v${K8S_VERSION%.*}" "${psa_versions[@]}"
-# The ORDS LoadBalancer IP must be inside MetalLB's pool
-lb_ip=$(var "$K8S/scripts/deploy-ords.sh" LB_IP)
+# Per environment: its LoadBalancer IP inside MetalLB's pool (and no two environments sharing
+# one), its database port the same in ords.env and the network policy, and every image pinned
+# by tag and digest
 range=$(sed -n 's/^ *- \([0-9.]*-[0-9.]*\)$/\1/p' "$K8S/manifests/addons/metallb-pool.yaml")
-check "ORDS IP $lb_ip within the MetalLB pool $range" python3 -c 'import ipaddress as i, sys
+lb_ips=()
+for e in "${envs[@]}"; do
+  lb_ip=$(sed -n 's/^LB_IP=//p' "$K8S/portal/$e/ords.env")
+  lb_ips+=("$lb_ip")
+  check "portal/$e: LB_IP $lb_ip within the MetalLB pool $range" python3 -c 'import ipaddress as i, sys
 a, b = sys.argv[2].split("-")
 sys.exit(not i.ip_address(a) <= i.ip_address(sys.argv[1]) <= i.ip_address(b))' "$lb_ip" "$range"
-# Images are pinned by digest
-check "ORDS image pinned by tag and digest" grep -q '^ORDS_IMAGE=[^ ]*:[^ ]*@sha256:[0-9a-f]\{64\}' "$K8S/scripts/deploy-ords.sh"
+  same "portal/$e: database port in ords.env and the network policy" \
+    "$(sed -n 's/^DB_PORT=//p' "$K8S/portal/$e/ords.env")" \
+    "$(python3 -c 'import sys, yaml
+print([d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "ords"][0]["spec"]["egress"][0]["ports"][0]["port"])' "$work/rendered/$e.yaml")"
+  if grep -E '^ *image: ' "$work/rendered/$e.yaml" | grep -vqE 'image: [^ ]+:[^ @]+@sha256:[0-9a-f]{64}$'; then
+    fail "portal/$e: an image isn't pinned by tag and digest (images: in its kustomization.yaml)"
+  else
+    pass "portal/$e: every image pinned by tag and digest"
+  fi
+done
+[ "$(printf '%s\n' "${lb_ips[@]}" | sort | uniq -d)" = "" ] || fail "two environments share a LB_IP"
 
 # Besides Cloudflare, the ORDS Service admits exactly the three nodes (each as a /32), never a
 # wider LAN range: a router that rewrites forwarded connections' source would get past one
-ranges=$(sed -n '/loadBalancerSourceRanges:/,/^  [a-zA-Z]/p' "$K8S/manifests/ords/ords.yaml" \
+ranges=$(sed -n '/loadBalancerSourceRanges:/,/^  [a-zA-Z]/p' "$K8S/portal/base/service.yaml" \
   | grep -oE '[0-9]+\.[0-9.]+/[0-9]+' | sort)
 same "LAN addresses the ORDS Service admits (the nodes)" \
   "$(awk '{print $1 "/32"}' <<<"$hosts" | sort | xargs)" "$(grep '^192\.168\.' <<<"$ranges" | xargs)"
@@ -262,7 +299,7 @@ if [ "$ONLINE" = true ]; then
   if [ -n "$cf_live" ] && [ "$cf_live" = "$cf_repo" ]; then
     pass "ORDS Service allows exactly Cloudflare's current IPv4 ranges"
   else
-    fail "Cloudflare's IPv4 ranges changed, or couldn't be downloaded: compare loadBalancerSourceRanges in ords.yaml with https://www.cloudflare.com/ips-v4"
+    fail "Cloudflare's IPv4 ranges changed, or couldn't be downloaded: compare loadBalancerSourceRanges in k8s/portal/base/service.yaml with https://www.cloudflare.com/ips-v4"
   fi
 fi
 
