@@ -2,7 +2,7 @@
 
 Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, on 2026-10-15.
 
-`<user>` stands for your personal login on k8-control (`USER_NAME` in `apply-changes.sh`).
+`<user>` stands for your personal login on k8-control. The scripts that need it set it near their top: `USER_NAME` in `apply-changes.sh` and `revert-changes.sh`, `KUBECONFIG_USERS` in `control-plane-init.sh`, `CONTROL_LOGIN` in `proxmox-create-workers.sh` and `TARGETS` in `claude-classic-tui.sh`. `ci/validate.sh` checks they agree.
 
 ## Contents
 
@@ -380,8 +380,8 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 |------|----------------|
 | Shell scripts | `bash -n` and ShellCheck on every script; every script is executable in git |
 | Kubernetes | The ORDS manifests rendered exactly as `deploy-ords.sh` applies them (with and without `DB_HOST_IP`), against the Kubernetes schemas for the cluster's version with kubeconform `-strict`, and the MetalLB pool against MetalLB's CRD schemas (from a pinned commit of the CRDs catalog). The kubeadm config with the real `kubeadm` of the same version. The audit policy's shape. `bash -n` on the scripts inside the manifests |
-| Consistency | Values repeated across files agree: Kubernetes version, pod CIDR, node IPs, DNS servers, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
-| Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, and Calico's Installation with our pod CIDR is valid |
+| Consistency | Values repeated across files agree: Kubernetes version, pod CIDR, node IPs, DNS servers, the personal login, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
+| Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, the scripts' edits to Calico's and metrics-server's files still apply, and Calico's Installation with our pod CIDR is valid |
 | Documentation | Every relative link and `#anchor` in the README resolves, and [Contents](#contents) lists every section and subsection, in order. `docs/architecture.svg` is exactly what `docs/architecture.py` generates, so the diagram can't drift from its source, and the generator's own checks pass (labels fit their boxes, no arrow crosses a label, no text under 14 px) |
 | Hygiene | LF line endings, no trailing whitespace, a final newline in every file |
 | Secrets | gitleaks over the files staged for the next commit and the whole git history; no key, certificate or kubeconfig file tracked |

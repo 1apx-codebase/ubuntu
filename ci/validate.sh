@@ -48,7 +48,7 @@ GITLEAKS=$(tool gitleaks https://github.com/gitleaks/gitleaks/releases/download/
 # kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own
 # hash, which is fetched only the first time (the cached binary is kept per version)
 KUBEADM_URL="https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/kubeadm"
-KUBEADM=$(find "$TOOLS" -path "$TOOLS/kubeadm-*" -name kubeadm -newer /dev/null 2>/dev/null \
+KUBEADM=$(find "$TOOLS" -path "$TOOLS/kubeadm-*" -name kubeadm -type f 2>/dev/null \
   | while read -r k; do [ "$("$k" version -o short 2>/dev/null)" = "v$K8S_VERSION" ] && echo "$k"; done | head -1)
 if [ -z "$KUBEADM" ]; then
   KUBEADM_SHA=$(curl -fsSL "$KUBEADM_URL.sha256")
@@ -150,6 +150,11 @@ dns_sorted() { tr ', ' '\n' <<<"$1" | grep . | sort | xargs; }
 same "DNS servers" "$(dns_sorted "$(sed -n 's/^DNS_SERVERS="\([^"]*\)".*/\1/p' "$K8S/scripts/node-prep.sh")")" \
   "$(dns_sorted "$(sed -n 's/^DNS="\([^"]*\)".*/\1/p' "$K8S/scripts/proxmox-create-workers.sh")")" \
   "$(dns_sorted "$(sed -n 's/^DNS="\([^"]*\)".*/\1/p' "$ROOT/apply-changes.sh")")"
+# The personal login (<user> in the README), set separately in each script that needs it
+same "Personal login" "$(var "$ROOT/apply-changes.sh" USER_NAME)" "$(var "$ROOT/revert-changes.sh" USER_NAME)" \
+  "$(sed -n 's/^KUBECONFIG_USERS="\([^ "]*\).*/\1/p' "$K8S/scripts/control-plane-init.sh")" \
+  "$(var "$K8S/scripts/proxmox-create-workers.sh" CONTROL_LOGIN | cut -d@ -f1)" \
+  "$(sed -n 's|^ *\([^:]*\):/home/\1/\.claude/settings\.json$|\1|p' "$ROOT/claude-classic-tui.sh")"
 # The ORDS LoadBalancer IP must be inside MetalLB's pool
 lb_ip=$(var "$K8S/scripts/deploy-ords.sh" LB_IP)
 range=$(sed -n 's/^ *- \([0-9.]*-[0-9.]*\)$/\1/p' "$K8S/manifests/addons/metallb-pool.yaml")
@@ -193,9 +198,15 @@ if [ "$ONLINE" = true ]; then
   done < <(grep -v '^#' "$pins")
   [ "$ok" = false ] || pass "pinned hashes match upstream"
   # Calico's Installation with our pod CIDR, as control-plane-init.sh applies it
-  curl -fsSL "${expected[2]}" | sed "s|cidr: 192.168.0.0/16|cidr: $(var "$K8S/scripts/node-prep.sh" POD_CIDR)|" \
+  pod_cidr=$(var "$K8S/scripts/node-prep.sh" POD_CIDR)
+  curl -fsSL "${expected[2]}" | sed "s|cidr: 192.168.0.0/16|cidr: $pod_cidr|" \
     | python3 -c 'import sys,yaml; print(yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Installation"]))' \
     > "$work/calico-installation.yaml"
+  check "Calico's pod CIDR is replaced, as control-plane-init.sh does" grep -q "cidr: $pod_cidr" "$work/calico-installation.yaml"
+  # metrics-server gets --kubelet-insecure-tls with the same sed as cluster-addons.sh
+  curl -fsSL "${expected[4]}" -o "$work/metrics-server.yaml"
+  sed -i "$(grep -o "sed -i '[^']*'" "$K8S/scripts/cluster-addons.sh" | sed "s/^sed -i '//; s/'$//")" "$work/metrics-server.yaml"
+  check "metrics-server gets --kubelet-insecure-tls, as cluster-addons.sh does" grep -q -- '- --kubelet-insecure-tls$' "$work/metrics-server.yaml"
   check "Calico Installation with our pod CIDR" "${KUBECONFORM[@]}" -strict -kubernetes-version "$K8S_VERSION" \
     -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
   # The ORDS Service admits Cloudflare's current IPv4 ranges (plus the nodes), no more, no less
