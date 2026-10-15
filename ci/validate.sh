@@ -206,6 +206,24 @@ for target in re.findall(r"\]\(([^)\s]+)\)", md):
         print(f"missing heading: {target}", file=sys.stderr); bad = 1
 sys.exit(bad)
 PY
+# The README's Contents lists every ## and ### heading, in order, with the right nesting
+if python3 - README.md <<'PY'; then pass "README Contents matches its headings"; else fail "README Contents is out of date"; fi
+import re, sys
+md = open(sys.argv[1]).read()
+def slug(h):
+    return re.sub(r"[^\w\- ]", "", h.replace("`", "").strip().lower()).replace(" ", "-")
+toc_block = md.split("## Contents\n", 1)[1].split("\n## ", 1)[0]
+toc = re.findall(r"^( *)- \[(.+)\]\(#([^)]+)\)$", toc_block, re.M)
+body = md.split("## Contents\n", 1)[1].split("\n", 1)[1]
+heads = [(lvl, t) for lvl, t in re.findall(r"^(##|###) (.+)$", body, re.M)]
+want = [("" if lvl == "##" else "  ", t, slug(t)) for lvl, t in heads]
+if toc != want:
+    for got, exp in zip(toc + [None] * len(want), want + [None] * len(toc)):
+        if got != exp:
+            print(f"first difference: Contents has {got}, headings say {exp}", file=sys.stderr)
+            break
+    sys.exit(1)
+PY
 # The diagram is generated: the committed SVG must be exactly what the script produces
 if python3 docs/architecture.py "$work/architecture.svg" "$ARIMO" >/dev/null \
    && cmp -s "$work/architecture.svg" docs/architecture.svg; then

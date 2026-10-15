@@ -2,6 +2,39 @@
 
 Changes made to the host `k8-control` (Ubuntu 26.04.1 LTS) after installation, on 2026-10-15.
 
+## Contents
+
+- [Changes made after installation](#changes-made-after-installation)
+- [Apply all changes](#apply-all-changes)
+- [Revert all changes](#revert-all-changes)
+- [Kubernetes cluster for Oracle ORDS](#kubernetes-cluster-for-oracle-ords)
+  - [Cluster design](#cluster-design)
+  - [Accounts](#accounts)
+  - [DNS](#dns)
+  - [Kernel settings](#kernel-settings)
+  - [Firewall](#firewall)
+  - [Public access through Cloudflare](#public-access-through-cloudflare)
+  - [Before you start](#before-you-start)
+  - [Step 1: Create the admin account (on k8-control)](#step-1-create-the-admin-account-on-k8-control)
+  - [Step 2: Create the worker VMs (on the Proxmox host)](#step-2-create-the-worker-vms-on-the-proxmox-host)
+  - [Step 3: Prepare k8-control](#step-3-prepare-k8-control)
+  - [Step 4: Create the control plane](#step-4-create-the-control-plane)
+  - [Step 5: Join the workers](#step-5-join-the-workers)
+  - [Step 6: Install the add-ons](#step-6-install-the-add-ons)
+  - [Step 7: Deploy ORDS](#step-7-deploy-ords)
+  - [Step 8: Check the cluster](#step-8-check-the-cluster)
+  - [Running the cluster](#running-the-cluster)
+- [Validation and CI](#validation-and-ci)
+- [GitHub access](#github-access)
+  - [One-time setup](#one-time-setup)
+- [Appendix A: Copying text from Claude Code](#appendix-a-copying-text-from-claude-code)
+- [Appendix B: ORDS on Kubernetes: security, operations and troubleshooting](#appendix-b-ords-on-kubernetes-security-operations-and-troubleshooting)
+  - [B.1 Security practices applied](#b1-security-practices-applied)
+  - [B.2 Day-to-day operations](#b2-day-to-day-operations)
+  - [B.3 Troubleshooting](#b3-troubleshooting)
+
+## Changes made after installation
+
 | # | Change | File |
 |---|--------|------|
 | 1 | Passwordless sudo for `vaviles` | `/etc/sudoers.d/vaviles-nopasswd` (root:root, `0440`) |
@@ -329,7 +362,7 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 | Kubernetes | The ORDS manifests rendered exactly as `deploy-ords.sh` applies them (with and without `DB_HOST_IP`), and the MetalLB pool, against the Kubernetes schemas for the cluster's version with kubeconform `-strict`. The kubeadm config with the real `kubeadm` of the same version. The audit policy's shape. `bash -n` on the scripts inside the manifests |
 | Consistency | Values repeated across files agree: Kubernetes version, pod CIDR, node IPs, DNS servers, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
 | Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, and Calico's Installation with our pod CIDR is valid |
-| Documentation | Every relative link and `#anchor` in the README resolves. `docs/architecture.svg` is exactly what `docs/architecture.py` generates, so the diagram can't drift from its source, and the generator's own checks pass (labels fit their boxes, no arrow crosses a label, no text under 14 px) |
+| Documentation | Every relative link and `#anchor` in the README resolves, and [Contents](#contents) lists every section and subsection, in order. `docs/architecture.svg` is exactly what `docs/architecture.py` generates, so the diagram can't drift from its source, and the generator's own checks pass (labels fit their boxes, no arrow crosses a label, no text under 14 px) |
 | Hygiene | LF line endings, no trailing whitespace, a final newline in every file |
 | Secrets | gitleaks over the whole git history; no key, certificate or kubeconfig file tracked |
 
