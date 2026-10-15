@@ -107,6 +107,43 @@ assert p["apiVersion"] == "audit.k8s.io/v1" and p["kind"] == "Policy", "not an a
 levels = {"None", "Metadata", "Request", "RequestResponse"}
 assert p["rules"] and all(r.get("level") in levels for r in p["rules"]), "a rule has no valid level"
 PY
+# Pod Security "restricted", which namespace.yaml enforces: the same rules the API server applies
+# (https://kubernetes.io/docs/concepts/security/pod-security-standards/), so a violation shows up
+# here rather than as pods that are never created. Also: every root filesystem is read-only.
+if python3 - "$work"/rendered/*.yaml <<'PY'; then pass "every pod meets Pod Security restricted, with read-only root filesystems"; else fail "Pod Security restricted (above)"; fi
+import sys, yaml
+ALLOWED_VOLUMES = {"configMap", "csi", "downwardAPI", "emptyDir", "ephemeral", "persistentVolumeClaim", "projected", "secret"}
+bad = []
+for f in sys.argv[1:]:
+    for d in yaml.safe_load_all(open(f)):
+        if not d or d["kind"] not in ("Deployment", "Pod", "Job"):
+            continue
+        spec = d["spec"] if d["kind"] == "Pod" else d["spec"]["template"]["spec"]
+        name = f"{d['kind']}/{d['metadata']['name']}"
+        psc = spec.get("securityContext", {})
+        for k in ("hostNetwork", "hostPID", "hostIPC"):
+            if spec.get(k): bad.append(f"{name}: {k}")
+        for v in spec.get("volumes", []):
+            t = (set(v) - {"name"}).pop()
+            if t not in ALLOWED_VOLUMES: bad.append(f"{name}: volume {v['name']} is {t}")
+        if psc.get("runAsUser") == 0: bad.append(f"{name}: runAsUser 0")
+        for c in spec.get("initContainers", []) + spec["containers"]:
+            sc, cn = c.get("securityContext", {}), f"{name}/{c['name']}"
+            caps = sc.get("capabilities", {})
+            if sc.get("privileged"): bad.append(f"{cn}: privileged")
+            if sc.get("allowPrivilegeEscalation") is not False: bad.append(f"{cn}: allowPrivilegeEscalation not false")
+            if not sc.get("runAsNonRoot", psc.get("runAsNonRoot")): bad.append(f"{cn}: runAsNonRoot not true")
+            if sc.get("runAsUser") == 0: bad.append(f"{cn}: runAsUser 0")
+            if sc.get("seccompProfile", psc.get("seccompProfile", {})).get("type") not in ("RuntimeDefault", "Localhost"):
+                bad.append(f"{cn}: no RuntimeDefault or Localhost seccomp profile")
+            if "ALL" not in caps.get("drop", []): bad.append(f"{cn}: capabilities not dropped (ALL)")
+            if set(caps.get("add", [])) - {"NET_BIND_SERVICE"}: bad.append(f"{cn}: adds capabilities {caps['add']}")
+            if any(p.get("hostPort") for p in c.get("ports", [])): bad.append(f"{cn}: hostPort")
+            if sc.get("readOnlyRootFilesystem") is not True: bad.append(f"{cn}: root filesystem not read-only")
+for b in bad:
+    print(b, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
 # Bash embedded in the manifests
 embedded=("$work"/rendered/ords.yaml "$work"/rendered/ords-preflight.yaml "$work"/rendered/ords-install-job.yaml)
 if python3 - "${embedded[@]}" <<'PY'; then pass "bash -n on the scripts in the manifests"; else fail "embedded scripts"; fi
@@ -155,6 +192,10 @@ same "Personal login" "$(var "$ROOT/apply-changes.sh" USER_NAME)" "$(var "$ROOT/
   "$(sed -n 's/^KUBECONFIG_USERS="\([^ "]*\).*/\1/p' "$K8S/scripts/control-plane-init.sh")" \
   "$(var "$K8S/scripts/proxmox-create-workers.sh" CONTROL_LOGIN | cut -d@ -f1)" \
   "$(sed -n 's|^ *\([^:]*\):/home/\1/\.claude/settings\.json$|\1|p' "$ROOT/claude-classic-tui.sh")"
+# The namespace's Pod Security version is the cluster's minor version
+mapfile -t psa_versions < <(sed -n 's/^ *pod-security\.kubernetes\.io\/[a-z]*-version: //p' "$K8S/manifests/ords/namespace.yaml")
+[ "${#psa_versions[@]}" = 3 ] || fail "namespace.yaml should have 3 Pod Security version labels, has ${#psa_versions[@]}"
+same "Pod Security version labels" "v${K8S_VERSION%.*}" "${psa_versions[@]}"
 # The ORDS LoadBalancer IP must be inside MetalLB's pool
 lb_ip=$(var "$K8S/scripts/deploy-ords.sh" LB_IP)
 range=$(sed -n 's/^ *- \([0-9.]*-[0-9.]*\)$/\1/p' "$K8S/manifests/addons/metallb-pool.yaml")

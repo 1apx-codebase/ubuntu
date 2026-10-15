@@ -42,11 +42,16 @@ spec:
                   --admin-user SYS --proxy-user \
                   --db-hostname "$DB_HOST" --db-port "$DB_PORT" --db-servicename "$DB_SERVICE" \
                   --feature-sdw false --log-folder /tmp/ords-logs --password-stdin
+          env:
+            # Database encryption settings from deploy-ords.sh (DB_ENCRYPTION), the same as ORDS's
+            - name: JDK_JAVA_OPTIONS
+              value: "__DB_JAVA_OPTS__"
           envFrom:
             - configMapRef:
                 name: ords-db
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           resources:
@@ -62,7 +67,12 @@ spec:
             - name: runtime
               mountPath: /run/secrets/ords-runtime
               readOnly: true
+            - name: tmp                # its config and logs go to /tmp/ords-config, /tmp/ords-logs
+              mountPath: /tmp
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
         - name: admin
           secret:
             secretName: ords-db-admin

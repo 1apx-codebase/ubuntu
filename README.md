@@ -234,6 +234,7 @@ Notes:
 - **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.pem`, `*.p12`, `*.jks` and `*.pfx` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool.
 - **DNS records.** Add the "Before you start" rows of [DNS records to add](#dns-records-to-add): `node.1apx.com` (or set `DB_HOST_IP`), and optionally the node names. The Cloudflare records come later, at cutover.
+- **CPU.** The ORDS image is built on Oracle Linux 10, which needs an x86-64-v3 CPU (AVX2: Intel Haswell or AMD Excavator, 2013, and later). The workers use the Proxmox host's own CPU type (`host`), and `proxmox-create-workers.sh` stops if the host's CPU lacks it. k8-control's virtual CPU doesn't need it, because ORDS never runs there.
 - **Proxmox details.** The worker VMs' disks go on the ZFS storage `zfs-pool-data`, and their network on the bridge `vmbr0`. Check both on the Proxmox host with `pvesm status --content images` and `ip -br link`, and change `STORAGE` or `BRIDGE` in the script if yours differ. The script needs Proxmox VE 7.2 or later.
 - **Password SSH to k8-control.** The VM script fetches `k8sadmin`'s public key by logging in to `<user>@192.168.1.170`, so the Proxmox host must be able to log in there with a password once.
 
@@ -256,7 +257,7 @@ It fetches `k8sadmin`'s public key from k8-control, downloads the Ubuntu 26.04 c
 - The `k8sadmin` account with that SSH key and passwordless sudo. Cloud images don't allow SSH password logins.
 - The QEMU guest agent enabled, and the VM set to start when the Proxmox host boots.
 
-The script stops if a worker's IP already answers ping.
+The script stops if a worker's IP already answers ping, or if the host's CPU can't run the ORDS image (see [Before you start](#before-you-start)).
 
 Check: after a minute, on k8-control, `sudo -iu k8sadmin ssh 192.168.1.171 hostname` prints `k8-worker-1`.
 
@@ -273,8 +274,7 @@ It does what every Kubernetes node needs:
 5. Installs containerd and sets it to systemd cgroups (the same as kubelet). It also sets containerd's pause image to the one kubeadm expects, `pause:3.10.2`.
 6. Installs `kubelet`, `kubeadm` and `kubectl` 1.36.5 from `pkgs.k8s.io`, and holds them so `apt upgrade` can't change them.
 7. Makes kubelet use the node's LAN IP, not the `127.0.1.1` entry Ubuntu puts in `/etc/hosts`.
-8. Creates `/var/cache/ords-apex`, owned by the ORDS image's `oracle` user (UID 54321), where the ORDS pods keep the APEX images (see Step 7).
-9. Turns on the firewall (see [Firewall](#firewall)).
+8. Turns on the firewall (see [Firewall](#firewall)).
 
 It ends with a summary. Check that swap shows 0, both modules are listed, `ip_forward` is 1, the firewall is active, and the machine ID is different on every node.
 
@@ -320,21 +320,22 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 - **Turned off:** the Database API (`database.api.enabled false`), which the old server had on but nothing uses, because ORDS is now on the internet. The MongoDB API is off by default and is also set off explicitly (`mongo.enabled false`).
 - **Halved:** the connection pool, because there are now two ORDS pods. Each pod gets `InitialLimit 15`, `MinLimit 25` and `MaxLimit 150`, which add up to the old server's 30 / 50 / 300. Raise them if one pod has to carry all the traffic.
 - **Port 8443** for HTTPS inside the pod, instead of 443, so ORDS runs without root. The service still listens on 443.
+- **Encrypted database traffic.** With `DB_ENCRYPTION=true` (the default in `deploy-ords.sh`), every connection to the database is encrypted and checksummed with Oracle Native Network Encryption (AES, SHA-2), or refused. ORDS, the preflight check and the install Job all require it. Databases allow it by default (`SQLNET.ENCRYPTION_SERVER = accepted`), so nothing changes on the database server, unless it's set to `rejected` (see [B.3](#b3-troubleshooting), `ORA-12660`).
 - **Left out:** `standalone.use.https` and `standalone.use.ssl.cert` (old settings, unused by current ORDS), the old server's access log path (`standalone.access.log`), the empty `misc.compress`, and the `default` → `plsql.gateway.mode` line, which isn't a real setting.
 
 **What the script does:**
 
-1. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's HTTPS port, 8443, and can only reach DNS, the database (its own address, port 1521) and HTTPS (443, for the APEX images download). Everything else is blocked. The database's address is `DB_HOST_IP`, or what `node.1apx.com` resolves to when the script runs, so re-run the script if the database's address changes.
+1. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), which enforces Pod Security `restricted`: the API server refuses any pod there that could run as root, keep Linux capabilities, or use a host folder. It also applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's HTTPS port, 8443, and can only reach DNS, the database (its own address, port 1521) and HTTPS (443, for the APEX images download). Everything else is blocked. The database's address is `DB_HOST_IP`, or what `node.1apx.com` resolves to when the script runs, so re-run the script if the database's address changes.
 2. **Certificate.** Checks that it covers `www.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret.
 3. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
-4. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB). If the pod hasn't finished after 10 minutes (usually because the image can't be downloaded), the script shows the pod's events and stops.
-5. **APEX images.** Uses the database's APEX version, unless you set `APEX_VERSION`, and checks that Oracle publishes `apex_<version>.zip` for it. Each worker downloads the images once (about 300 MB) into `/var/cache/ords-apex`, and pods on that worker reuse them. The workers need HTTPS access to `download.oracle.com`.
+4. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path, the password and, with `DB_ENCRYPTION=true`, that the database accepts encryption. It also reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB). If the pod hasn't finished after 10 minutes (usually because the image can't be downloaded), the script shows the pod's events and stops.
+5. **APEX images.** Uses the database's APEX version, unless you set `APEX_VERSION`, and checks that Oracle publishes `apex_<version>.zip` for it. Each pod downloads the images when it starts (about 290 MB, 480 MB unpacked) into its own temporary volume (`emptyDir`), which adds a minute or so to a pod's start. They're not kept on the workers, so the pods need no host folder. The workers need HTTPS access to `download.oracle.com`.
 6. **ORDS version.** If the database's ORDS version differs from the image (`ORDS_IMAGE`, 26.2.3 by default), the script stops. Either set `ORDS_IMAGE` to the database's version, or set `INSTALL_OR_UPGRADE_SCHEMA=true`. In that case it asks for the SYS password, runs the one-time install/upgrade Job (stopping as soon as it fails, or after 30 minutes), and **then deletes the SYS password** from the cluster. Upgrading the schema affects every ORDS server using this database, so upgrade your existing server to the same version. The manifests were checked against the 26.2.3 image (its `ords` commands, user and file layout); recent versions share them, but check an older one before using it, because older images differ.
 7. **Deploys ORDS:**
    - **Two replicas**, normally one on each worker, with a PodDisruptionBudget so one keeps running during node maintenance. The spread is a preference, so both replicas can run on one worker while the other is drained or down.
    - **No shared storage.** Each pod writes its own ORDS config when it starts, and never sees the SYS password.
    - **Runs `ords serve` directly** instead of the image's entrypoint. The entrypoint turns on Database Actions, REST-enabled SQL and the MongoDB API at every start, which would override your settings.
-   - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, and memory limits (3 GiB for ORDS). The APEX images cache, `/var/cache/ords-apex` on each worker, is created by `node-prep.sh` and owned by that user.
+   - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, a read-only root filesystem, and memory limits (3 GiB for ORDS). They write only to their own temporary volumes: ORDS's config, the APEX images and `/tmp`.
    - **Health checks** connect over HTTPS and send `Host: www.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
    - **Service** on `192.168.1.180`: port **443**, HTTPS only (Cloudflare redirects `http://` to `https://` before traffic reaches the cluster). It accepts connections only from Cloudflare's addresses and the cluster's nodes (see [Public access through Cloudflare](#public-access-through-cloudflare)). It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
    - **Root redirect:** `https://www.1apx.com/` (no path) shows a small page in each pod that sends the browser on to `/apps/`.
@@ -362,7 +363,7 @@ On k8-control, as `<user>`:
 
 - **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. To run it daily, copy it to `/usr/local/sbin` and add a cron line; the script's header shows both commands. Re-run the `install` command after changing the script. Copy the backups off the VM, and keep them private: they contain the cluster's private keys and the key that decrypts its Secrets. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
 - **Certificates** that kubeadm creates expire after one year, and upgrading the control plane renews them. Check them with `sudo kubeadm certs check-expiration`.
-- **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data` first (the ORDS pods keep their generated config in an `emptyDir`, which drain otherwise refuses to delete); the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh` and the version in `kubeadm-config.yaml`, and upgrade Calico when its tested versions require it. When you change Calico's, MetalLB's or metrics-server's version, update its lines in `k8s/config/upstream.sha256` too (the file's header shows how).
+- **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data` first (the ORDS pods keep their generated config in an `emptyDir`, which drain otherwise refuses to delete); the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh`, the version in `kubeadm-config.yaml` and the `pod-security.kubernetes.io/*-version` labels in `namespace.yaml`, and upgrade Calico when its tested versions require it. When you change Calico's, MetalLB's or metrics-server's version, update its lines in `k8s/config/upstream.sha256` too (the file's header shows how).
 - **OS updates.** `apt upgrade` is safe because the Kubernetes packages are held. Reboot one node at a time, draining workers first (see Maintenance in [B.2](#b2-day-to-day-operations)).
 - **Certificate renewal.** The `*.1apx.com` certificate expires on 2 January 2027. Put the renewed files in `ssl/` with the same names, or change `CERT_FILE`, `CHAIN_FILE` and `KEY_FILE`. Then run `deploy-ords.sh` again, which updates the `ords-tls` Secret and restarts the pods one at a time.
 - **ORDS upgrades.** Set `ORDS_IMAGE` to the new tag and its digest (the comment above it says where to find the digest) and `INSTALL_OR_UPGRADE_SCHEMA=true`, run `deploy-ords.sh`, then set it back to `false`. Upgrade the old ORDS server too, or retire it.
@@ -379,8 +380,8 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 | Area | What it checks |
 |------|----------------|
 | Shell scripts | `bash -n` and ShellCheck on every script; every script is executable in git |
-| Kubernetes | The ORDS manifests rendered exactly as `deploy-ords.sh` applies them (with and without `DB_HOST_IP`), against the Kubernetes schemas for the cluster's version with kubeconform `-strict`, and the MetalLB pool against MetalLB's CRD schemas (from a pinned commit of the CRDs catalog). The kubeadm config with the real `kubeadm` of the same version. The audit policy's shape. `bash -n` on the scripts inside the manifests |
-| Consistency | Values repeated across files agree: Kubernetes version, pod CIDR, node IPs, DNS servers, the personal login, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
+| Kubernetes | The ORDS manifests rendered exactly as `deploy-ords.sh` applies them (with and without `DB_HOST_IP`), against the Kubernetes schemas for the cluster's version with kubeconform `-strict`, and the MetalLB pool against MetalLB's CRD schemas (from a pinned commit of the CRDs catalog). The kubeadm config with the real `kubeadm` of the same version. The audit policy's shape. Every pod against the Pod Security `restricted` rules the namespace enforces, and a read-only root filesystem on every container. `bash -n` on the scripts inside the manifests |
+| Consistency | Values repeated across files agree: Kubernetes version (including the namespace's Pod Security version), pod CIDR, node IPs, DNS servers, the personal login, the encryption config path, and the ORDS IP inside MetalLB's pool. The ORDS image is pinned by digest |
 | Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, the scripts' edits to Calico's and metrics-server's files still apply, and Calico's Installation with our pod CIDR is valid |
 | Documentation | Every relative link and `#anchor` in the README resolves, and [Contents](#contents) lists every section and subsection, in order. `docs/architecture.svg` is exactly what `docs/architecture.py` generates, so the diagram can't drift from its source, and the generator's own checks pass (labels fit their boxes, no arrow crosses a label, no text under 14 px) |
 | Hygiene | LF line endings, no trailing whitespace, a final newline in every file |
@@ -492,12 +493,15 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | From the internet, ORDS is reachable only through Cloudflare: the Service admits only Cloudflare's address ranges and the three nodes (`loadBalancerSourceRanges`), not the whole LAN, in case the router rewrites forwarded connections' source, so Cloudflare's DDoS and bot protection can't be bypassed. `ci/validate.sh` checks the ranges against Cloudflare's published list | `ords.yaml`, `ci/validate.sh` |
 | HTTPS all the way: browsers to Cloudflare, and Cloudflare to ORDS with the certificate checked (SSL mode Full (strict)) | Cloudflare (see [Public access](#public-access-through-cloudflare)) |
 | HTTPS only: the Service and network policy admit only HTTPS, Cloudflare redirects `http://` to `https://`, and ORDS serves the full certificate chain | `ords.yaml`, `network-policy.yaml`, `deploy-ords.sh` |
+| Database traffic is encrypted (AES) and checksummed (SHA-2), required by ORDS, the preflight check and the install Job, so a connection that can't be encrypted is refused | `deploy-ords.sh` (`DB_ENCRYPTION`) |
 
 **ORDS pods**
 
 | Practice | Where |
 |----------|-------|
+| Pod Security `restricted` is enforced on the namespace, so the API server refuses any pod that breaks it. `ci/validate.sh` checks every pod in the repo against the same rules | `namespace.yaml`, `ci/validate.sh` |
 | Every container runs as the image's `oracle` user (UID 54321), never root, with no Linux capabilities, no privilege escalation, and the default seccomp profile | `ords.yaml` |
+| Every container's root filesystem is read-only; each writes only to its own `emptyDir` volumes (config, APEX images, `/tmp`), each with a size limit | `ords.yaml`, `ords-preflight.yaml`, `ords-install-job.yaml` |
 | No Kubernetes API token in the pods (`automountServiceAccountToken: false`); ORDS never talks to the API | `ords.yaml`, `ords-preflight.yaml`, `ords-install-job.yaml` |
 | Memory limits on every container, so a leak can't take a worker down | same |
 | Image pinned by digest, so it can't change even if Oracle re-publishes the tag | `deploy-ords.sh` |
@@ -519,15 +523,13 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 
 | Gap | Why, and what would close it |
 |-----|------------------------------|
-| **Traffic to the database isn't encrypted** unless the database requires it. ORDS connects to `node.1apx.com:1521` over plain TCP | Turn on Oracle Native Network Encryption on the database server (`SQLNET.ENCRYPTION_SERVER = required` in its `sqlnet.ora`), or use a TCPS listener. ORDS needs no change for the first |
-| No Pod Security level is enforced on the namespace | The APEX images cache is a host folder (`hostPath`), which both enforceable levels forbid. The pods otherwise meet the strictest level, `restricted` |
 | HTTPS out of the namespace is allowed to any address | Needed for the APEX images download from `download.oracle.com`, whose addresses change |
+| Other ORDS servers using the same database (such as the old one) aren't covered by `DB_ENCRYPTION` | Their traffic is encrypted only if they ask for it too, or if the database requires it for everyone: `SQLNET.ENCRYPTION_SERVER = required` and `SQLNET.CRYPTO_CHECKSUM_SERVER = required` in its `sqlnet.ora` |
 | ORDS is exposed to the internet through a router port forward | Chosen over a Cloudflare Tunnel. The source ranges limit it to Cloudflare. A tunnel (`cloudflared`) would need no open port at all |
 | ORDS doesn't verify that a connection really comes through your Cloudflare account | Anyone's Cloudflare-proxied site could point at your IP. Cloudflare's Authenticated Origin Pulls would close this, but need client-certificate checking in front of ORDS |
 | metrics-server doesn't verify kubelets' certificates | The usual kubeadm setting. Verifying them means approving kubelet certificates by hand every year |
 | `<user>` and `k8sadmin` have passwordless sudo | Chosen for automation (see the top of this README) |
 | One control-plane node | See [Running the cluster](#running-the-cluster) |
-| Containers' root filesystems are writable (`readOnlyRootFilesystem` isn't set) | ORDS writes temporary files; a read-only root filesystem with writable `emptyDir` folders for them would need testing on the real image first |
 
 ### B.2 Day-to-day operations
 
@@ -564,7 +566,7 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | Change the `ORDS_PUBLIC_USER` password | Change it in the database, then `kubectl delete secret ords-db-runtime -n ords` and run `deploy-ords.sh`, which asks for the new one. Update the old ORDS server too |
 | Renew the certificate | Put the new files in `ssl/` with the same names and run `deploy-ords.sh`. Check the expiry date in use with `kubectl get secret ords-tls -n ords -o jsonpath='{.data.tls\.crt}' \| base64 -d \| openssl x509 -noout -enddate` |
 | Upgrade ORDS | See "ORDS upgrades" under [Running the cluster](#running-the-cluster). Tag and digest both change |
-| New APEX version in the database | Run `deploy-ords.sh`. It finds the new version, and each worker downloads its images on the next pod start. Remove the old version's folder from `/var/cache/ords-apex/` on each worker afterwards |
+| New APEX version in the database | Run `deploy-ords.sh`. It finds the new version, and the pods it replaces download the new images when they start |
 | More replicas | Set `replicas` in `ords.yaml` and run `deploy-ords.sh` (not `kubectl scale`, which the next deploy would undo). Each pod opens up to `jdbc.MaxLimit` (150) database connections, so check the database's session limit first |
 
 **Maintenance**
@@ -585,9 +587,11 @@ Start with `kubectl get pods -n ords -o wide` and `kubectl describe pod -n ords 
 | Symptom | Likely cause | Check and fix |
 |---------|--------------|---------------|
 | `Pending` | Not enough CPU or memory on the workers, or both workers unschedulable | `describe` shows `Insufficient memory` or `node(s) were unschedulable`. Free up resources, or `kubectl uncordon` the worker |
-| `ContainerCreating` for minutes, event `hostPath type check failed: /var/cache/ords-apex is not a directory` | The worker wasn't prepared with the current `node-prep.sh` | Run `sudo k8s/scripts/join-workers.sh`, which re-runs `node-prep.sh` on the workers |
+| No pod is created; `kubectl get events -n ords` shows `violates PodSecurity "restricted"` | A manifest change broke a `restricted` rule | The event names the rule. Fix the manifest; `ci/validate.sh` checks the same rules before you deploy |
+| `CrashLoopBackOff`, log says `Fatal glibc error: CPU does not support x86-64-v3` | The worker's virtual CPU lacks AVX2 | In Proxmox, set the VM's CPU type to `host` (or `x86-64-v3`) on a host whose CPU has it, then restart the VM |
 | `ErrImagePull` or `ImagePullBackOff` | The worker can't reach `container-registry.oracle.com`, or the tag and digest in `ORDS_IMAGE` don't match | `describe` shows the registry's error. From the worker: `curl -sI https://container-registry.oracle.com`. Check the digest belongs to the tag |
 | `Init:Error` or `Init:CrashLoopBackOff` | The APEX download or the config step failed | `kubectl logs -n ords <pod> -c apex-images` (download blocked, or no `apex_<version>.zip`), and `-c config` (often a misspelt key in `ords-settings.conf`) |
+| Pod `Evicted`, message mentions `ephemeral local storage usage exceeds` | A temporary volume outgrew its size limit (`sizeLimit` in `ords.yaml`), for example because a new APEX version's images are larger | Raise that volume's `sizeLimit` and redeploy |
 | `CrashLoopBackOff`, `describe` shows `Last State: OOMKilled` | ORDS needs more memory than its 3 GiB limit | Raise `limits.memory` in `ords.yaml` and redeploy |
 | `CrashLoopBackOff`, log mentions the certificate or key | The TLS key isn't PKCS#8, or doesn't match the certificate | Re-run `deploy-ords.sh`, which converts and checks it |
 
@@ -602,6 +606,7 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 | `ORA-12514` | The listener doesn't know the service `pdb1` | Check `DB_SERVICE` in `deploy-ords.sh` against `lsnrctl status` on the database server |
 | `ORA-12541`, connect timeout, `IO Error` | No network path to `node.1apx.com:1521` | Check the database's firewall allows the workers' IPs (171, 172), and that `node.1apx.com` resolves inside the pods. If it doesn't, set `DB_HOST_IP`. If the database's address changed, re-run `deploy-ords.sh`: the network policy only allows the address it found last time (`kubectl get networkpolicy ords -n ords -o yaml`) |
 | `UnknownHostException` | The pods can't resolve the database name | Set `DB_HOST_IP` in `deploy-ords.sh` and redeploy, or add the DNS record |
+| `ORA-12660` | The database refuses encryption (`SQLNET.ENCRYPTION_SERVER = rejected` in its `sqlnet.ora`) | Change that to `accepted` or `required` on the database server. Only if that isn't possible, set `DB_ENCRYPTION=false` in `deploy-ords.sh` and redeploy |
 
 `deploy-ords.sh` repeats the same login in its preflight check, so running it again shows the database's exact error.
 
@@ -617,7 +622,7 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 | Scripts or REST clients get `403` with a "Just a moment..." page | Cloudflare's bot challenge. Add a WAF rule that skips it for those clients |
 | No answer from `192.168.1.180` at all | MetalLB's speaker answers ARP for it: `kubectl get pods -n metallb-system -o wide` should show a running speaker on each worker. `ip neigh show 192.168.1.180` on a LAN machine shows which MAC answered |
 | Certificate warning in the browser | Check what's served, on k8-control: `openssl s_client -connect 192.168.1.180:443 -servername www.1apx.com -showcerts </dev/null`. Expect `*.1apx.com` and the full chain |
-| `/i/` images missing (APEX pages unstyled) | `kubectl get configmap ords-db -n ords -o yaml` should show `APEX_VERSION`, and `ls /var/cache/ords-apex/` on the worker should list it with a `.complete` file. If `APEX_VERSION` is empty, set it in `deploy-ords.sh` and redeploy |
+| `/i/` images missing (APEX pages unstyled) | `kubectl get configmap ords-db -n ords -o yaml` should show `APEX_VERSION`, and `kubectl logs -n ords <pod> -c apex-images` should end with "images ready". If `APEX_VERSION` is empty, set it in `deploy-ords.sh` and redeploy |
 | APEX logs users out, or shows "session expired" | APEX keeps sessions in the database, so switching pods doesn't end them. Its session cookie is tied to the host name and HTTPS, so check users open `https://www.1apx.com/...`, not the IP address or `http://`. Then check both pods are `1/1 Ready`: a pod restarting mid-request can fail a page, not a session |
 
 **Suspect the network policy?** Remove it for a moment: `kubectl delete networkpolicy ords -n ords`, and test again. If that fixes it, a connection ORDS needs isn't in `network-policy.yaml`: add it there, commit, and run `deploy-ords.sh`, which also restores the policy. If it doesn't help, run `deploy-ords.sh` anyway to put the policy back.

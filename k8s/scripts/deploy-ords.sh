@@ -25,6 +25,11 @@ DB_SERVICE=pdb1                   # the PDB service name, not the CDB
 # DB_HOST to this IP, like an /etc/hosts entry.
 DB_HOST_IP=
 
+# Encrypt and checksum all database traffic (Oracle Native Network Encryption, AES and SHA-2),
+# required from ORDS's side: a connection that can't be encrypted is refused. Databases allow
+# it by default; set false only if yours rejects it (ORA-12660, see the README).
+DB_ENCRYPTION=true
+
 # APEX version for the /i/ static images, as major.minor (24.2, 26.1, ...).
 # Leave empty to use the version the preflight check finds in the database.
 APEX_VERSION=
@@ -47,6 +52,11 @@ ORDS_TAG=${ORDS_TAG##*:}          # 26.2.3
 HOST_ALIASES="[]"
 [ -z "$DB_HOST_IP" ] || HOST_ALIASES="[{ip: \"$DB_HOST_IP\", hostnames: [\"$DB_HOST\"]}]"
 CONFIG_HASH=                      # set in step 7
+# Java system properties that make the Oracle JDBC driver require encryption (DB_ENCRYPTION)
+DB_JAVA_OPTS=
+[ "$DB_ENCRYPTION" != true ] || DB_JAVA_OPTS="-Doracle.net.encryption_client=REQUIRED \
+-Doracle.net.encryption_types_client=(AES256,AES192,AES128) -Doracle.net.crypto_checksum_client=REQUIRED \
+-Doracle.net.crypto_checksum_types_client=(SHA512,SHA384,SHA256)"
 # The database's IPv4 addresses, the only ones the network policy lets the pods reach on
 # DB_PORT: DB_HOST_IP, or what DB_HOST resolves to when the script runs
 DB_IPS=$DB_HOST_IP
@@ -54,6 +64,7 @@ ip_blocks() { local ip s=; for ip in $DB_IPS; do s="$s${s:+, }{ipBlock: {cidr: \
 render() {
   sed -e "s|__ORDS_IMAGE__|$ORDS_IMAGE|g" -e "s|__ORDS_HOSTNAME__|$ORDS_HOSTNAME|g" -e "s|__LB_IP__|$LB_IP|g" \
       -e "s|__DB_PORT__|$DB_PORT|g" -e "s|__CONFIG_HASH__|$CONFIG_HASH|g" -e "s|__DB_IP_BLOCKS__|$(ip_blocks)|g" \
+      -e "s|__DB_JAVA_OPTS__|$DB_JAVA_OPTS|g" \
       -e "s|hostAliases: \[\]|hostAliases: $HOST_ALIASES|" "$1"
 }
 if [ "${1:-}" = --render ]; then

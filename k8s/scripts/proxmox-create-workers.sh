@@ -27,6 +27,12 @@ command -v qm >/dev/null || { echo "qm not found: this must run on the Proxmox h
 pvesm status --content images | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" \
   || { echo "Storage '$STORAGE' not found, or it doesn't hold VM disks (pvesm status --content images)." >&2; exit 1; }
 ip link show "$BRIDGE" >/dev/null || { echo "Bridge '$BRIDGE' not found." >&2; exit 1; }
+# The ORDS image (Oracle Linux 10) needs an x86-64-v3 CPU (AVX2). The workers use CPU type
+# "host", so this host's CPU must have it.
+for flag in avx avx2 bmi1 bmi2 f16c fma movbe xsave; do
+  grep -qw "$flag" /proc/cpuinfo \
+    || { echo "This host's CPU lacks $flag (x86-64-v3), which the ORDS image needs." >&2; exit 1; }
+done
 
 # k8sadmin's public key from k8-control, which cloud-init installs on each worker
 key=$(mktemp)

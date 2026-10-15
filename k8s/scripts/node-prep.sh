@@ -103,11 +103,7 @@ EOF
 echo "KUBELET_EXTRA_ARGS=--node-ip=$NODE_IP" > /etc/default/kubelet
 systemctl enable kubelet
 
-# 10. Host folder for the ORDS pods' APEX images cache (hostPath in ords.yaml), owned
-#     by the image's oracle user (54321), so the pods never need to run as root
-install -d -m 0755 -o 54321 -g 54321 /var/cache/ords-apex
-
-# 11. Host firewall (ufw): deny incoming by default, allow only what the cluster needs
+# 10. Host firewall (ufw): deny incoming by default, allow only what the cluster needs
 if [ "$ENABLE_FIREWALL" = true ]; then
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
@@ -133,7 +129,7 @@ if [ "$ENABLE_FIREWALL" = true ]; then
   ufw --force enable >/dev/null
 fi
 
-# 12. Summary
+# 11. Summary
 echo "---"
 echo "hostname:    $(hostname -s) ($NODE_IP)"
 echo "DNS servers: $(resolvectl dns 2>/dev/null | awk -F': ' 'NF>1 && $2!="" {print $2}' | xargs)"

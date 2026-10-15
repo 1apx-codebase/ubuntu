@@ -61,27 +61,27 @@
   <text x="280.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
   <text x="280.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
   <text x="280.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS on port 8443</text>
-  <text x="280.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · no capabilities</text>
+  <text x="280.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · read-only root filesystem</text>
   <rect x="90" y="1022" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="280.0" y="1045.2" font-size="15" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>
   <rect x="90" y="1068" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="280.0" y="1091.2" font-size="15" text-anchor="middle" fill="#4b5563">Calico node · MetalLB speaker</text>
   <rect x="90" y="1114" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
-  <text x="280.0" y="1137.2" font-size="15" text-anchor="middle" fill="#4b5563">/var/cache/ords-apex (APEX images)</text>
+  <text x="280.0" y="1137.2" font-size="15" text-anchor="middle" fill="#4b5563">CPU type host · x86-64-v3 (AVX2)</text>
   <rect x="540" y="828" width="360" height="160" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
   <text x="720.0" y="864.0" font-size="17" text-anchor="middle" font-weight="bold">ORDS pod</text>
   <text x="720.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
   <text x="720.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
   <text x="720.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS on port 8443</text>
-  <text x="720.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · no capabilities</text>
+  <text x="720.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · read-only root filesystem</text>
   <rect x="530" y="1022" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="720.0" y="1045.2" font-size="15" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>
   <rect x="530" y="1068" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="720.0" y="1091.2" font-size="15" text-anchor="middle" fill="#4b5563">Calico node · MetalLB speaker</text>
   <rect x="530" y="1114" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
-  <text x="720.0" y="1137.2" font-size="15" text-anchor="middle" fill="#4b5563">/var/cache/ords-apex (APEX images)</text>
-  <rect x="375.5" y="779" width="249.0" height="26" rx="13" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="500.0" y="797" font-size="14" text-anchor="middle" font-weight="bold" fill="#2563eb">namespace ords · NetworkPolicy</text>
+  <text x="720.0" y="1137.2" font-size="15" text-anchor="middle" fill="#4b5563">CPU type host · x86-64-v3 (AVX2)</text>
+  <rect x="290.6" y="779" width="418.7" height="26" rx="13" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="500.0" y="797" font-size="14" text-anchor="middle" font-weight="bold" fill="#2563eb">namespace ords · NetworkPolicy · Pod Security: restricted</text>
   <rect x="20" y="300" width="960" height="892" rx="12" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="7 5"/>
   <rect x="62.4" y="1179" width="395.3" height="26" rx="13" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
   <text x="260" y="1197" font-size="14" text-anchor="middle" font-weight="bold" fill="#64748b">Proxmox VE host · LAN 192.168.1.0/24 (bridge vmbr0)</text>
@@ -101,7 +101,7 @@
   <path d="M118,688 L118,828" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-user)"/>
   <path d="M882,688 L882,828" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-user)"/>
   <path d="M500.0,1006 L500.0,1234" fill="none" stroke="#c2410c" stroke-width="2" marker-end="url(#m-db)"/>
-  <text x="510.0" y="1222" font-size="14" text-anchor="start" font-weight="bold" fill="#c2410c">JDBC :1521 · ORDS_PUBLIC_USER</text>
+  <text x="510.0" y="1222" font-size="14" text-anchor="start" font-weight="bold" fill="#c2410c">encrypted JDBC · ORDS_PUBLIC_USER</text>
   <path d="M830,1168 L830,1234" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#m-net)"/>
   <rect x="30" y="1234" width="280" height="136" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1"/>
   <text x="46" y="1258" font-size="15" text-anchor="start" font-weight="bold">Legend</text>

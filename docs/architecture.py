@@ -216,14 +216,14 @@ for vm in (w1, w2):
     x, _, w, _ = vm
     labeled_box(x + 30, POD_Y, w - 60, 160,
                 ["ORDS pod", "ords:26.2.3 (pinned by digest)", "init: apex-images, config",
-                 "ords serve · HTTPS on port 8443", "UID 54321 · no capabilities"],
+                 "ords serve · HTTPS on port 8443", "UID 54321 · read-only root filesystem"],
                 C["pod"], C["podline"], r=8, size=BODY, gap=25)
     for j, label in enumerate(["kubelet · containerd · kube-proxy", "Calico node · MetalLB speaker",
-                               "/var/cache/ords-apex (APEX images)"]):
+                               "CPU type host · x86-64-v3 (AVX2)"]):
         labeled_box(x + 20, VY + 304 + j * 46, w - 40, 36, [label], C["pill"], C["line"], r=6,
                     first_bold=False, size=BODY)
 # Namespace tag, centered on the namespace box's top edge
-tag = "namespace ords · NetworkPolicy"
+tag = "namespace ords · NetworkPolicy · Pod Security: restricted"
 tw = text_width(tag, SMALL, bold=True) + 28
 rect(round(W / 2 - tw / 2, 1), NS[1] - 13, round(tw, 1), 26, "#ffffff", C["ns"], r=13)
 text(W / 2, NS[1] + 5, tag, SMALL, bold=True, color=C["ns"], box=(W / 2 - tw / 2, W / 2 + tw / 2))
@@ -267,7 +267,7 @@ for cx in (w1[0] + 48, w2[0] + w2[2] - 48):
 # Pods to the database: down the gap between the workers
 gx = W / 2
 arrow([(gx, NS[1] + NS[3]), (gx, db[1])], C["db"], "m-db")
-text(gx + 10, BY - 12, "JDBC :1521 · ORDS_PUBLIC_USER", LABEL, bold=True, color=C["db"], anchor="start",
+text(gx + 10, BY - 12, "encrypted JDBC · ORDS_PUBLIC_USER", LABEL, bold=True, color=C["db"], anchor="start",
      box=(gx, inet[0] + 120))
 # Workers to the internet: image pulls and the APEX download
 nx = inet[0] + 140

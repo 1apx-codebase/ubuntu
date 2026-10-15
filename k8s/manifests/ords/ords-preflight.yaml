@@ -38,11 +38,16 @@ spec:
           select 'APEX_VERSION=' || version_no from apex_release;
           exit
           SQL
+      env:
+        # Database encryption settings from deploy-ords.sh (DB_ENCRYPTION), the same as ORDS's
+        - name: JDK_JAVA_OPTIONS
+          value: "__DB_JAVA_OPTS__"
       envFrom:
         - configMapRef:
             name: ords-db
       securityContext:
         allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
         capabilities:
           drop: ["ALL"]
       resources:
@@ -55,7 +60,17 @@ spec:
         - name: runtime
           mountPath: /run/secrets/ords-runtime
           readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        - name: home
+          mountPath: /home/oracle
   volumes:
     - name: runtime
       secret:
         secretName: ords-db-runtime
+    - name: tmp
+      emptyDir:
+        sizeLimit: 256Mi
+    - name: home                 # SQLcl keeps its history and settings in the home folder
+      emptyDir:
+        sizeLimit: 64Mi

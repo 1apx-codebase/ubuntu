@@ -8,6 +8,8 @@
 #   ords-db-runtime Secret   ORDS_PUBLIC_USER password
 #   ords-tls Secret          certificate chain and private key
 # No shared storage is needed, and the SYS password is never given to these pods.
+# Every container has a read-only root filesystem: they write only to their emptyDir volumes
+# (config, APEX images, /tmp), so the namespace can enforce Pod Security "restricted".
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -56,8 +58,8 @@ spec:
             matchLabels:
               app: ords
       initContainers:
-        # APEX static images (/i/), downloaded once per worker and kept in /var/cache/ords-apex,
-        # which node-prep.sh creates owned by the oracle user
+        # APEX static images (/i/), downloaded from Oracle into this pod's apex-images volume
+        # each time the pod starts (about 290 MB; 480 MB unpacked)
         - name: apex-images
           image: __ORDS_IMAGE__
           command: ["/bin/bash", "-c"]
@@ -65,28 +67,19 @@ spec:
             - |
               set -euo pipefail
               if [ -z "${APEX_VERSION:-}" ]; then echo "APEX_VERSION not set, no APEX images"; exit 0; fi
-              dir="/apex-cache/$APEX_VERSION"
-              if [ -f "$dir/.complete" ]; then echo "APEX $APEX_VERSION images already on this node"; exit 0; fi
-              tmp="$dir.tmp.$HOSTNAME"
-              rm -rf "$tmp" && mkdir -p "$tmp" && cd "$tmp"
+              cd /apex-images
               echo "Downloading APEX $APEX_VERSION images..."
               curl -fsSL --retry 3 -o apex.zip "https://download.oracle.com/otn_software/apex/apex_${APEX_VERSION}.zip"
               if command -v unzip >/dev/null; then unzip -q apex.zip 'apex/images/*'; else jar xf apex.zip apex/images; fi
-              chmod -R a+rX apex/images && touch apex/images/.complete
-              # Another pod on this node may have finished first: never replace a complete
-              # folder, and move ours into place in one step so it's never seen half-written
-              if [ -f "$dir/.complete" ]; then
-                echo "APEX $APEX_VERSION images were installed by another pod"
-              else
-                rm -rf "$dir" && mv apex/images "$dir"
-                echo "APEX $APEX_VERSION images ready"
-              fi
-              cd / && rm -rf "$tmp"
+              rm -f apex.zip
+              chmod -R a+rX apex/images
+              echo "APEX $APEX_VERSION images ready"
           envFrom:
             - configMapRef:
                 name: ords-db
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           resources:
@@ -96,8 +89,10 @@ spec:
             limits:
               memory: 1Gi
           volumeMounts:
-            - name: apex-cache
-              mountPath: /apex-cache
+            - name: apex-images
+              mountPath: /apex-images
+            - name: tmp
+              mountPath: /tmp
         # Writes the ORDS config for this pod
         - name: config
           image: __ORDS_IMAGE__
@@ -117,7 +112,7 @@ spec:
               $c set standalone.https.cert /run/secrets/ords-tls/tls.crt
               $c set standalone.https.cert.key /run/secrets/ords-tls/tls.key
               if [ -n "${APEX_VERSION:-}" ]; then
-                $c set standalone.static.path "/opt/oracle/apex-cache/$APEX_VERSION"
+                $c set standalone.static.path /opt/oracle/apex-images/apex/images
               fi
               # https://<host>/ (no path) sends users on to APEX at /apps/
               docroot=/etc/ords/config/global/doc_root
@@ -133,6 +128,7 @@ spec:
                 name: ords-db
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           resources:
@@ -144,6 +140,8 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/ords/config
+            - name: tmp
+              mountPath: /tmp
             - name: settings
               mountPath: /etc/ords-settings
               readOnly: true
@@ -159,9 +157,10 @@ spec:
           env:
             # The ords launcher sets no heap size, so Java would default to a quarter of
             # the memory limit (768 MiB of 3 GiB). Give the heap 75%; the rest is for
-            # Java's own memory and threads.
+            # Java's own memory and threads. deploy-ords.sh adds the database encryption
+            # settings (DB_ENCRYPTION).
             - name: JDK_JAVA_OPTIONS
-              value: "-XX:MaxRAMPercentage=75"
+              value: "-XX:MaxRAMPercentage=75 __DB_JAVA_OPTS__"
           ports:
             - name: https
               containerPort: 8443
@@ -175,6 +174,7 @@ spec:
                 seconds: 10
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           resources:
@@ -220,12 +220,21 @@ spec:
             - name: tls
               mountPath: /run/secrets/ords-tls
               readOnly: true
-            - name: apex-cache
-              mountPath: /opt/oracle/apex-cache
+            - name: apex-images
+              mountPath: /opt/oracle/apex-images
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: config
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: apex-images
+          emptyDir:
+            sizeLimit: 2Gi           # the zip and its unpacked images, about 770 MB at the peak
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi           # Java's temporary files, such as large uploads
         - name: settings
           configMap:
             name: ords-settings
@@ -236,10 +245,6 @@ spec:
           secret:
             secretName: ords-tls
             defaultMode: 0440        # readable by the oracle group (fsGroup), not others
-        - name: apex-cache
-          hostPath:
-            path: /var/cache/ords-apex
-            type: Directory          # created by node-prep.sh, owned by UID 54321
 ---
 # Keep at least one ORDS pod running during node drains and upgrades
 apiVersion: policy/v1
