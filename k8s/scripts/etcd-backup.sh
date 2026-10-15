@@ -37,7 +37,7 @@ mv "$snap" "$BACKUP_DIR/etcd-$stamp.db"
 # encryption key (/etc/kubernetes), kubelet's client certificate and config (/var/lib/kubelet),
 # and k8sadmin's SSH key, which the workers accept
 files=(etc/kubernetes var/lib/kubelet/pki var/lib/kubelet/config.yaml var/lib/kubelet/kubeadm-flags.env)
-ssh_dir=$(getent passwd k8sadmin | cut -d: -f6)/.ssh
+ssh_dir=$(getent passwd k8sadmin | cut -d: -f6 || true)/.ssh
 [ ! -d "$ssh_dir" ] || files+=("${ssh_dir#/}")
 tar -czf "$BACKUP_DIR/kubernetes-config-$stamp.tgz" -C / "${files[@]}"
 chmod 600 "$BACKUP_DIR"/*"$stamp"*

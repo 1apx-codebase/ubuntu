@@ -241,6 +241,11 @@ print([d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "N
   fi
 done
 [ "$(printf '%s\n' "${lb_ips[@]}" | sort | uniq -d)" = "" ] || fail "two environments share a LB_IP"
+# health-check.sh checks production with its own copy of production's values
+hc="$K8S/scripts/health-check.sh" prod="$K8S/portal/prod"
+same "health-check.sh namespace" "$(sed -n 's/^namespace: *//p' "$prod/kustomization.yaml")" "$(var "$hc" NAMESPACE)"
+same "health-check.sh host name" "$(sed -n 's/^ORDS_HOSTNAME=//p' "$prod/ords.env")" "$(var "$hc" ORDS_HOSTNAME)"
+same "health-check.sh MetalLB address" "$(sed -n 's/^LB_IP=//p' "$prod/ords.env")" "$(var "$hc" LB_IP)"
 
 # Besides Cloudflare, the ORDS Service admits exactly the three nodes (each as a /32), never a
 # wider LAN range: a router that rewrites forwarded connections' source would get past one

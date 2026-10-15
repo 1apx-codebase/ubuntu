@@ -149,6 +149,7 @@ ORDS is described with Kustomize, which is built into `kubectl`, in three levels
 - **See what would change in the cluster:** `k8s/scripts/deploy-ords.sh --diff`.
 - **Deploy with `deploy-ords.sh`,** not `kubectl apply -k`. The script also creates the two Secrets, which aren't in git, and checks the certificate.
 - **The ConfigMaps' names end in a hash of their contents**, so a settings change makes new pods (one at a time) without any extra step.
+- **Removing an object** from the Kustomize files doesn't remove it from the cluster: `kubectl apply` only creates and updates. Delete it yourself, for example `kubectl delete networkpolicy <name> -n ords`. `deploy-ords.sh` cleans up only the generated ConfigMaps.
 
 ### Accounts
 

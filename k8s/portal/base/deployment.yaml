@@ -69,6 +69,8 @@ spec:
           args:
             - |
               set -uo pipefail
+              : "${ORDS_VER:?is not set by this image, so its ORDS version is unknown}"
+              APEX_VERSION=${APEX_VERSION:-}
               pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
               out=$(sql -S -L /nolog 2>&1 <<SQL
               whenever sqlerror exit failure

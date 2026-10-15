@@ -14,5 +14,5 @@ To set it up, copy the files from [`../prod`](../prod) and change:
 - `ords-pool.conf`: the pool size for dev's pods and database.
 
 Then deploy it with `k8s/scripts/deploy-ords.sh dev`. `ci/validate.sh` builds and checks
-every environment that has a `kustomization.yaml`. The README (Appendix B.5) covers the
-Cloudflare record, router and certificate a public environment also needs.
+every environment that has a `kustomization.yaml`. The README's Appendix B.5 has the full
+steps, including LAN access and the room it needs on the workers.

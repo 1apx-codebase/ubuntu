@@ -10,7 +10,8 @@
 # stop arriving, which covers k8-control itself being down.
 set -uo pipefail
 
-ORDS_HOSTNAME=www.1apx.com        # as in deploy-ords.sh
+NAMESPACE=ords                    # production, as in k8s/portal/prod (ci/validate.sh checks
+ORDS_HOSTNAME=www.1apx.com        # these three against its kustomization.yaml and ords.env)
 LB_IP=192.168.1.180
 NODES="k8-control k8-worker-1 k8-worker-2"
 WARN_DAYS=30                      # certificates expiring within this many days fail the check
@@ -39,8 +40,8 @@ for n in $NODES; do
 done
 
 # ORDS: every pod ready, and answering
-want=$(kubectl get deployment ords -n ords -o jsonpath='{.spec.replicas}' 2>/dev/null)
-ready=$(kubectl get deployment ords -n ords -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+want=$(kubectl get deployment ords -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+ready=$(kubectl get deployment ords -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
 if [ -n "$want" ] && [ "${ready:-0}" -ge "$want" ]; then result ok "ORDS: $ready of $want pods ready"
 else result FAIL "ORDS: ${ready:-0} of ${want:-?} pods ready"; fi
 direct() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$ORDS_HOSTNAME:443:$LB_IP" "https://$ORDS_HOSTNAME$1"; }

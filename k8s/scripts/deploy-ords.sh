@@ -28,6 +28,7 @@ KEY_FILE=1apx.key                 # private key (any format; converted to PKCS#8
 
 OVERLAY="$K8S/portal/$ENV"
 [ "$(id -u)" -ne 0 ] || { echo "Run as your own login, not root." >&2; exit 1; }
+python3 -c 'import yaml' 2>/dev/null || { echo "Needs Python's yaml module: sudo apt install python3-yaml" >&2; exit 1; }
 [ -f "$OVERLAY/kustomization.yaml" ] \
   || { echo "The $ENV environment isn't set up yet: see $OVERLAY/README.md." >&2; exit 1; }
 NAMESPACE=$(sed -n 's/^namespace: *//p' "$OVERLAY/kustomization.yaml")
