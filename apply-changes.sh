@@ -9,8 +9,11 @@ GW=192.168.1.1
 DNS="192.168.1.1, 8.8.8.8"
 NETPLAN=/etc/netplan/00-installer-config.yaml
 
-# Pre-check: make sure the target IP is free
-if ping -c2 -W1 "${ADDR%/*}" >/dev/null; then
+[ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
+
+# Pre-check: make sure the target IP is free (skipped on a re-run, when it's already ours)
+if ! ip -4 -br addr show "$IFACE" | grep -q " ${ADDR%/*}/" \
+   && ping -c2 -W1 "${ADDR%/*}" >/dev/null; then
   echo "${ADDR%/*} is already in use, aborting" >&2
   exit 1
 fi

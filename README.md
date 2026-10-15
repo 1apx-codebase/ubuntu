@@ -13,6 +13,8 @@ Backups on the host:
 - `/root/00-installer-config.yaml.bak-dhcp` is the original DHCP config.
 - `/root/00-installer-config.yaml.bak-static-dns1` is the static config with router-only DNS, from before change 3.
 
+These two were made by hand. The scripts below name their backups `/root/00-installer-config.yaml.bak-<date>-<time>`.
+
 Notes:
 
 - Sudo applies the last matching rule. `vaviles` is still in the `sudo` group, so `sudo -l -U vaviles` lists both `(ALL : ALL) ALL` and `NOPASSWD: ALL`, and no password is asked for.
@@ -26,13 +28,14 @@ Script: [`apply-changes.sh`](apply-changes.sh). Run it with `sudo ./apply-change
 Run as root from the **console**, not over SSH, because the IP address changes.
 If you have to use SSH, change `netplan apply` in the script to `netplan try`, which rolls back after 120 seconds unless you confirm.
 Edit the variables at the top to use the script on another machine.
+It's safe to re-run: the check that the new IP is free is skipped when the machine already has it.
 To change DNS later, edit `nameservers.addresses` in the netplan file (servers are tried in order), then run `netplan generate && netplan apply`.
 
 ## Revert all changes
 
 Script: [`revert-changes.sh`](revert-changes.sh). Run it with `sudo ./revert-changes.sh`.
 
-This removes the sudo rule and restores the original DHCP config.
+This removes the sudo rule and restores the original DHCP config, after backing up the current netplan file to `/root`. Its variables must match the ones in `apply-changes.sh`.
 
 ## Kubernetes cluster for Oracle ORDS
 
@@ -143,7 +146,7 @@ Things to know:
 
 - **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 7). The workers must be able to reach port 1521 on the database server.
 - **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 7 checks both and tells you if anything needs changing.
-- **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.p12` and `*.jks` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
+- **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.pem`, `*.p12`, `*.jks` and `*.pfx` file, out of git. Step 7 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool. All of them answered no ping when this was written.
 - **DNS records.** None of the cluster names resolve today: `1apx.com` is on Cloudflare, but `k8-control`, the workers, `node.1apx.com` and `ords.1apx.com` have no records. You need:
   - `ords.1apx.com` → `192.168.1.180`, the name users and browsers will use for ORDS (see the caveat under [DNS](#dns)).
@@ -181,7 +184,7 @@ Script: [`k8s/scripts/node-prep.sh`](k8s/scripts/node-prep.sh). Run `sudo k8s/sc
 
 It does what every Kubernetes node needs:
 
-1. Adds the three nodes to `/etc/hosts`.
+1. Adds the three nodes to `/etc/hosts`, and to cloud-init's template for it (`/etc/cloud/templates/hosts.debian.tmpl`). On the workers, cloud-init rewrites `/etc/hosts` from that template at every boot, so without this a worker would lose the names after a reboot and couldn't reach `k8-control.1apx.com`.
 2. Checks that the DNS servers are `192.168.1.1` and `8.8.8.8` (see [DNS](#dns)).
 3. Turns swap off. k8-control has a 4 GB swap file.
 4. Loads the kernel modules and applies the kernel settings (see [Kernel settings](#kernel-settings)).
@@ -207,7 +210,7 @@ The control plane keeps its default taint, so ORDS and other workloads only run 
 
 Script: [`k8s/scripts/join-workers.sh`](k8s/scripts/join-workers.sh). Run `sudo k8s/scripts/join-workers.sh`.
 
-For each worker, it logs in as `k8sadmin` with that account's key and runs `node-prep.sh` there, including the firewall. Then it creates a single-use join token that expires after 30 minutes and runs `kubeadm join` on the worker. Finally it waits for both workers to be `Ready` and labels them as workers.
+For each worker, it logs in as `k8sadmin` with that account's key, waits for cloud-init's first-boot work (including its package upgrade) to finish, then copies `node-prep.sh` there and runs it, including the firewall. Then it creates a join token that expires after 30 minutes, runs `kubeadm join` on the worker, and deletes the token. Finally it waits for both workers to be `Ready` and labels them as workers.
 
 The first SSH connection to each worker saves its host key. If you want to check it, compare it with the key shown on the VM's Proxmox console.
 
@@ -238,9 +241,9 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 2. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
 3. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB).
 4. **APEX images.** Uses the database's APEX version, unless you set `APEX_VERSION`, and checks that Oracle publishes `apex_<version>.zip` for it. Each worker downloads the images once (about 300 MB) into `/var/cache/ords-apex`, and pods on that worker reuse them. The workers need HTTPS access to `download.oracle.com`.
-5. **ORDS version.** If the database's ORDS version differs from the image (`ORDS_IMAGE`, 26.2.3 by default), the script stops. Either set `ORDS_IMAGE` to the database's version (tags 25.1.1 to 26.3.0 are available), or set `INSTALL_OR_UPGRADE_SCHEMA=true`. In that case it asks for the SYS password, runs the one-time install/upgrade Job, and **then deletes the SYS password** from the cluster. Upgrading the schema affects every ORDS server using this database, so upgrade your existing server to the same version.
+5. **ORDS version.** If the database's ORDS version differs from the image (`ORDS_IMAGE`, 26.2.3 by default), the script stops. Either set `ORDS_IMAGE` to the database's version (tags 25.1.1 to 26.3.0 are available), or set `INSTALL_OR_UPGRADE_SCHEMA=true`. In that case it asks for the SYS password, runs the one-time install/upgrade Job (stopping as soon as it fails, or after 30 minutes), and **then deletes the SYS password** from the cluster. Upgrading the schema affects every ORDS server using this database, so upgrade your existing server to the same version.
 6. **Deploys ORDS:**
-   - **Two replicas**, spread across the two workers, with a PodDisruptionBudget so one keeps running during node maintenance.
+   - **Two replicas**, normally one on each worker, with a PodDisruptionBudget so one keeps running during node maintenance. The spread is a preference, so both replicas can run on one worker while the other is drained or down.
    - **No shared storage.** Each pod writes its own ORDS config when it starts, and never sees the SYS password.
    - **Runs `ords serve` directly** instead of the image's entrypoint. The entrypoint turns on Database Actions, REST-enabled SQL and the MongoDB API at every start, which would override your settings.
    - **Locked down:** runs as the image's `oracle` user (UID 54321) with no extra Linux capabilities and a 3 GiB memory limit. Only the step that writes the APEX images into the worker's cache runs as root.
@@ -259,14 +262,14 @@ On k8-control, as `vaviles`:
 
 - `kubectl get nodes -o wide` shows three `Ready` nodes.
 - `kubectl get pods -A` shows everything `Running`.
-- `kubectl get pods -n ords -o wide` shows one ORDS pod on each worker, both `1/1 Ready`. A pod stays `0/1` while it can't reach the database.
+- `kubectl get pods -n ords -o wide` shows one ORDS pod on each worker, both `1/1 Ready`. If both are on one worker (after that worker was down, for example), run `kubectl rollout restart deployment/ords -n ords` to spread them again. A pod stays `0/1` while it can't reach the database.
 - `kubectl logs -n ords deploy/ords` shows "HTTPS listening on host: 0.0.0.0 port: 8443" and no pool errors.
 - `curl -sI https://ords.1apx.com/apps/` returns a `302` to the APEX start page. Running `curl -vI` also shows the `*.1apx.com` certificate.
 - `kubectl top nodes` shows CPU and memory for each node.
 
 ### Running the cluster
 
-- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. Schedule it daily with cron (the script's header shows the line). Copy the backups off the VM, because they contain the cluster's private keys. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
+- **Backups.** Script: [`k8s/scripts/etcd-backup.sh`](k8s/scripts/etcd-backup.sh). Run `sudo k8s/scripts/etcd-backup.sh` on k8-control. It saves an etcd snapshot (the whole cluster state) plus `/etc/kubernetes` (certificates and config) to `/var/backups/kubernetes`, and keeps 14 days. It talks to etcd through containerd (`crictl`), so it works even when the API server is down. Schedule it daily with cron (the script's header shows the line). Copy the backups off the VM, because they contain the cluster's private keys. Also set up scheduled Proxmox backups (vzdump) of all three VMs.
 - **Certificates** that kubeadm creates expire after one year, and upgrading the control plane renews them. Check them with `sudo kubeadm certs check-expiration`.
 - **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets` first; the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh` and the version in `kubeadm-config.yaml`, and upgrade Calico when its tested versions require it.
 - **OS updates.** `apt upgrade` is safe because the Kubernetes packages are held. Reboot one node at a time, draining workers first.

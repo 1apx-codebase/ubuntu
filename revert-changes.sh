@@ -1,21 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-rm -f /etc/sudoers.d/vaviles-nopasswd
+# Must match apply-changes.sh
+USER_NAME=vaviles
+IFACE=ens18
+MAC=bc:24:11:4a:ff:07
+NETPLAN=/etc/netplan/00-installer-config.yaml
+
+[ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
+
+# 1. Remove the passwordless sudo rule
+rm -f "/etc/sudoers.d/$USER_NAME-nopasswd"
 visudo -c
 
-cat > /etc/netplan/00-installer-config.yaml <<'EOF'
+# 2 + 3. Back up the current netplan config, then restore the installer's DHCP config
+cp -a "$NETPLAN" "/root/$(basename "$NETPLAN").bak-$(date +%F-%H%M%S)"
+cat > "$NETPLAN" <<EOF
 # This is the network config written by 'subiquity'
 network:
   ethernets:
-    ens18:
+    $IFACE:
       dhcp4: true
       dhcp6: true
       match:
-        macaddress: bc:24:11:4a:ff:07
-      set-name: ens18
+        macaddress: $MAC
+      set-name: $IFACE
   version: 2
 EOF
-chmod 600 /etc/netplan/00-installer-config.yaml
+chmod 600 "$NETPLAN"
 netplan generate
 netplan apply

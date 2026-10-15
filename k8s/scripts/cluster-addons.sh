@@ -9,7 +9,7 @@ METALLB_VERSION=v0.16.0
 LB_RANGE=192.168.1.180-192.168.1.189   # reserve this range on the router (outside DHCP)
 METRICS_SERVER_VERSION=v0.9.0
 
-retry() { for i in $(seq 1 30); do "$@" && return 0; sleep 10; done; return 1; }
+retry() { for _ in $(seq 1 30); do "$@" && return 0; sleep 10; done; return 1; }
 
 # 1. MetalLB in layer-2 mode
 kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/$METALLB_VERSION/config/manifests/metallb-native.yaml"

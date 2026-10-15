@@ -9,6 +9,13 @@ TARGETS=(
   vaviles:/home/vaviles/.claude/settings.json
 )
 
+case "${1:-}" in
+  "")       revert=false ;;
+  --revert) revert=true ;;
+  *) echo "Usage: sudo $0 [--revert]" >&2; exit 1 ;;
+esac
+[ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo $0 $*" >&2; exit 1; }
+
 for t in "${TARGETS[@]}"; do
   owner=${t%%:*}
   settings=${t#*:}
@@ -23,7 +30,7 @@ for t in "${TARGETS[@]}"; do
 
   # Write through cat so the file keeps its owner and mode
   f=$(mktemp)
-  if [[ "${1:-}" == "--revert" ]]; then
+  if [ "$revert" = true ]; then
     jq 'del(.tui)' "$settings" > "$f"
   else
     jq '.tui = "default"' "$settings" > "$f"

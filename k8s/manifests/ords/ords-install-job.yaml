@@ -38,7 +38,7 @@ spec:
               | ords --config /tmp/ords-config install \
                   --admin-user SYS --proxy-user \
                   --db-hostname "$DB_HOST" --db-port "$DB_PORT" --db-servicename "$DB_SERVICE" \
-                  --feature-sdw true --log-folder /tmp/ords-logs --password-stdin
+                  --feature-sdw false --log-folder /tmp/ords-logs --password-stdin
           envFrom:
             - configMapRef:
                 name: ords-db

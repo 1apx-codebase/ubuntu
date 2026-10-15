@@ -9,13 +9,14 @@ BACKUP_DIR=/var/backups/kubernetes
 KEEP_DAYS=14
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
-export KUBECONFIG=/etc/kubernetes/admin.conf
 stamp=$(date +%F-%H%M%S)
 install -d -m 0700 "$BACKUP_DIR"
 
-# etcdctl runs inside the etcd pod, which has the client certificates mounted
-pod=$(kubectl get pods -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -n kube-system "$pod" -- etcdctl \
+# etcdctl runs inside the etcd container, which has the client certificates mounted.
+# crictl reaches it through containerd, so this works even when the API server is down.
+cid=$(crictl ps --name '^etcd$' --state Running -q | head -1)
+[ -n "$cid" ] || { echo "etcd isn't running on this node." >&2; exit 1; }
+crictl exec "$cid" etcdctl \
   --endpoints=https://127.0.0.1:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
   --cert=/etc/kubernetes/pki/etcd/server.crt \
@@ -28,5 +29,5 @@ tar -czf "$BACKUP_DIR/kubernetes-etc-$stamp.tgz" -C / etc/kubernetes
 chmod 600 "$BACKUP_DIR"/*"$stamp"*
 
 find "$BACKUP_DIR" -type f -mtime +"$KEEP_DAYS" -delete
-ls -lh "$BACKUP_DIR" | tail -4
+ls -lh "$BACKUP_DIR"/*"$stamp"*
 echo "Copy $BACKUP_DIR off this VM (it holds the cluster's private keys)."

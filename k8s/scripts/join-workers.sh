@@ -19,16 +19,25 @@ kubectl get node k8-control >/dev/null || { echo "Run control-plane-init.sh firs
 
 for w in "${WORKERS[@]}"; do
   echo "=== $w"
-  rssh "$w" true
-  rssh "$w" "sudo bash -s" < "$HERE/node-prep.sh"
+  rssh "$w" true </dev/null
+  # Let first-boot cloud-init (including its package upgrade) finish, so apt isn't locked
+  rssh "$w" "sudo cloud-init status --wait >/dev/null 2>&1 || true" </dev/null
+  # Copy node-prep.sh over and run it from a file, so nothing it runs can read the
+  # rest of the script from stdin
+  tmp=$(rssh "$w" mktemp </dev/null)
+  rssh "$w" "cat > $tmp" < "$HERE/node-prep.sh"
+  rssh "$w" "sudo bash $tmp; rc=\$?; rm -f $tmp; exit \$rc" </dev/null
 
   if kubectl get node "$w" >/dev/null 2>&1; then
     echo "$w is already in the cluster"
     continue
   fi
-  # Short-lived token, used once
+  # Short-lived token, deleted once the worker has joined (it expires after 30 minutes
+  # anyway, if the join fails)
   join=$(kubeadm token create --ttl 30m --print-join-command)
-  rssh "$w" "sudo $join"
+  token=$(awk '{for (i = 1; i < NF; i++) if ($i == "--token") print $(i + 1)}' <<<"$join")
+  rssh "$w" "sudo $join" </dev/null
+  kubeadm token delete "$token" >/dev/null
 done
 
 echo "Waiting for all nodes to be Ready..."

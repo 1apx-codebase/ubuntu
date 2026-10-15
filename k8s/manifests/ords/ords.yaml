@@ -38,7 +38,8 @@ spec:
         fsGroup: 54321
         seccompProfile:
           type: RuntimeDefault
-      # Spread the replicas across the two workers
+      # Prefer one replica per worker. ScheduleAnyway (not DoNotSchedule) lets both run
+      # on one worker while the other is drained or down, instead of one staying Pending.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

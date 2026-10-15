@@ -160,10 +160,21 @@ if [ "$db_ords" != "$ORDS_TAG" ]; then
   kubectl delete job ords-install -n "$NAMESPACE" --ignore-not-found
   render "$MANIFESTS/ords-install-job.yaml" | kubectl apply -f -
   echo "Installing ORDS $ORDS_TAG in the database..."
-  if ! kubectl wait --for=condition=complete job/ords-install -n "$NAMESPACE" --timeout=30m; then
+  # Wait for the Job to complete or fail, up to 30 minutes
+  result=
+  for _ in $(seq 1 360); do
+    conds=$(kubectl get job ords-install -n "$NAMESPACE" \
+      -o jsonpath='{.status.conditions[?(@.status=="True")].type}' 2>/dev/null || true)
+    case " $conds " in
+      *" Complete "*) result=complete; break ;;
+      *" Failed "*)   result=failed; break ;;
+    esac
+    sleep 5
+  done
+  if [ "$result" != complete ]; then
     kubectl logs job/ords-install -n "$NAMESPACE" --tail=50 || true
     kubectl delete secret ords-db-admin -n "$NAMESPACE" --ignore-not-found
-    echo "The ORDS install failed; see the log above." >&2
+    echo "The ORDS install ${result:-timed out after 30 minutes}; see the log above." >&2
     exit 1
   fi
   kubectl logs job/ords-install -n "$NAMESPACE" --tail=5

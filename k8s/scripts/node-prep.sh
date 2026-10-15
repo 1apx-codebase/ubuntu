@@ -27,9 +27,14 @@ ip -4 -br addr | grep -q " $NODE_IP/" || { echo "$NODE_IP is not configured on t
 NODE_IPS=$(awk '{print $1}' <<<"$HOSTS_BLOCK")
 echo "Preparing $(hostname -s) ($NODE_IP)"
 
-# 1. Cluster names in /etc/hosts (there are no DNS records for them)
-sed -i '/^# BEGIN k8s-cluster$/,/^# END k8s-cluster$/d' /etc/hosts
-printf '# BEGIN k8s-cluster\n%s\n# END k8s-cluster\n' "$HOSTS_BLOCK" >> /etc/hosts
+# 1. Cluster names in /etc/hosts (there are no DNS records for them). On the workers,
+#    cloud-init rewrites /etc/hosts from its template at every boot (Proxmox sets
+#    manage_etc_hosts: true), so the template gets the same block.
+for f in /etc/hosts /etc/cloud/templates/hosts.debian.tmpl; do
+  [ -f "$f" ] || continue
+  sed -i '/^# BEGIN k8s-cluster$/,/^# END k8s-cluster$/d' "$f"
+  printf '# BEGIN k8s-cluster\n%s\n# END k8s-cluster\n' "$HOSTS_BLOCK" >> "$f"
+done
 
 # 2. DNS: check the node uses the expected servers. kubeadm points kubelet (and so
 #    CoreDNS) at /run/systemd/resolve/resolv.conf, which lists these real servers.
@@ -100,11 +105,10 @@ systemctl enable kubelet
 
 # 10. Host firewall (ufw): deny incoming by default, allow only what the cluster needs
 if [ "$ENABLE_FIREWALL" = true ]; then
-  # Kubernetes routes service and pod traffic through the FORWARD chain; ufw's default
-  # (DROP) would break it
-  sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
+  # Kubernetes routes service and pod traffic through the FORWARD chain; ufw's default
+  # (DROP) would break it. This sets DEFAULT_FORWARD_POLICY="ACCEPT" in /etc/default/ufw.
   ufw default allow routed >/dev/null
   ufw allow from "$LAN" to any port 22 proto tcp comment 'SSH from LAN' >/dev/null
   # Pods talking to this node (API server via the kubernetes service, kubelet, DNS)
