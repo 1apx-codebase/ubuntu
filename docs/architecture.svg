@@ -48,7 +48,7 @@
   <rect x="70" y="596" width="860" height="92" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
   <text x="500.0" y="626.0" font-size="17" text-anchor="middle" font-weight="bold">Service ords · LoadBalancer · 192.168.1.180</text>
   <text x="500.0" y="648.0" font-size="15" text-anchor="middle" fill="#4b5563">MetalLB layer 2 · admits only Cloudflare and the nodes</text>
-  <text x="500.0" y="670.0" font-size="15" text-anchor="middle" fill="#4b5563">:443 → pods 8443 (HTTPS) · :80 → 8080 (redirects to HTTPS)</text>
+  <text x="500.0" y="670.0" font-size="15" text-anchor="middle" fill="#4b5563">:443 → ORDS pods on port 8443 (HTTPS only)</text>
   <rect x="70" y="718" width="420" height="450" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
   <text x="280.0" y="748" font-size="19" text-anchor="middle" font-weight="bold">k8-worker-1</text>
   <text x="280.0" y="770" font-size="14" text-anchor="middle" fill="#4b5563">192.168.1.171 · worker · 4 vCPU, 8 GB</text>
@@ -60,7 +60,7 @@
   <text x="280.0" y="864.0" font-size="17" text-anchor="middle" font-weight="bold">ORDS pod</text>
   <text x="280.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
   <text x="280.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
-  <text x="280.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS 8443 · HTTP 8080</text>
+  <text x="280.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS on port 8443</text>
   <text x="280.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · no capabilities</text>
   <rect x="90" y="1022" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="280.0" y="1045.2" font-size="15" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>
@@ -72,7 +72,7 @@
   <text x="720.0" y="864.0" font-size="17" text-anchor="middle" font-weight="bold">ORDS pod</text>
   <text x="720.0" y="889.0" font-size="15" text-anchor="middle" fill="#4b5563">ords:26.2.3 (pinned by digest)</text>
   <text x="720.0" y="914.0" font-size="15" text-anchor="middle" fill="#4b5563">init: apex-images, config</text>
-  <text x="720.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS 8443 · HTTP 8080</text>
+  <text x="720.0" y="939.0" font-size="15" text-anchor="middle" fill="#4b5563">ords serve · HTTPS on port 8443</text>
   <text x="720.0" y="964.0" font-size="15" text-anchor="middle" fill="#4b5563">UID 54321 · no capabilities</text>
   <rect x="530" y="1022" width="380" height="36" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
   <text x="720.0" y="1045.2" font-size="15" text-anchor="middle" fill="#4b5563">kubelet · containerd · kube-proxy</text>

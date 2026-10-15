@@ -165,8 +165,8 @@ spec:
           ports:
             - name: https
               containerPort: 8443
-            - name: http             # only redirects to HTTPS (security.forceHTTPS)
-              containerPort: 8080
+            # ORDS also listens on 8080 for plain HTTP; nothing reaches it (the Service and
+            # the network policy only allow 8443)
           # On shutdown, keep serving for a few seconds while the Service and MetalLB
           # stop sending new connections here, so rolling updates don't drop requests
           lifecycle:
@@ -307,6 +307,3 @@ spec:
     - name: https
       port: 443
       targetPort: https
-    - name: http             # redirects to https://
-      port: 80
-      targetPort: http

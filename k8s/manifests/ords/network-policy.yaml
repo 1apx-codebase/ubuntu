@@ -12,12 +12,10 @@ spec:
   podSelector: {}
   policyTypes: ["Ingress", "Egress"]
   ingress:
-    # HTTPS, and HTTP that only redirects to it, from users through the Service
+    # HTTPS from users, through the Service
     - ports:
         - protocol: TCP
           port: 8443
-        - protocol: TCP
-          port: 8080
   egress:
     # DNS through CoreDNS
     - to:

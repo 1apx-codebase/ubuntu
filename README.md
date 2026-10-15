@@ -161,12 +161,11 @@ Every node uses the same DNS servers as k8-control: **`192.168.1.1`** (the route
 | 179 | TCP | Other nodes | All | Calico BGP |
 | 5473 | TCP | Other nodes | All | Calico Typha |
 | 7946 | TCP and UDP | Other nodes | All | MetalLB node coordination |
-| 30000–32767 | TCP | LAN | Workers | NodePort services (ORDS doesn't use them) |
 | all | all | Pods `10.244.0.0/16` | All | Pods reaching their node (API server, DNS, kubelet) |
 
 Things to know:
 
-- **ufw's forward policy** is changed from `DROP` to `ACCEPT` in `/etc/default/ufw`. Kubernetes sends service traffic, including ORDS on `192.168.1.180:443`, through the kernel's FORWARD chain, so ufw's default would silently break it. Because of this, ORDS's ports 80 and 443 need no rule.
+- **ufw's forward policy** is changed from `DROP` to `ACCEPT` in `/etc/default/ufw`. Kubernetes sends service traffic, including ORDS on `192.168.1.180:443`, through the kernel's FORWARD chain, so ufw's default would silently break it. Because of this, ORDS's port 443 needs no rule.
 - **Not opened:** etcd (2379–2380), the scheduler (10259) and the controller manager (10257). The scheduler and controller manager listen only on k8-control's loopback address. etcd also listens on its LAN address, but with these ports closed only k8-control itself can reach it.
 - **Use the console when enabling it.** SSH from the LAN is allowed before ufw is turned on, but if anything goes wrong, use the Proxmox console.
 - **When troubleshooting:** if pods can't reach each other or a service, run `sudo ufw disable` on the nodes for a moment. If that fixes it, a rule is missing. Check with `sudo ufw status numbered`.
@@ -323,7 +322,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 
 **What the script does:**
 
-1. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's ports 8443 and 8080, and can only reach DNS, the database port (1521) and HTTPS (443, for the APEX images download). Everything else is blocked.
+1. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's HTTPS port, 8443, and can only reach DNS, the database port (1521) and HTTPS (443, for the APEX images download). Everything else is blocked.
 2. **Certificate.** Checks that it covers `www.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret.
 3. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
 4. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB). If the pod hasn't finished after 10 minutes (usually because the image can't be downloaded), the script shows the pod's events and stops.
@@ -335,7 +334,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
    - **Runs `ords serve` directly** instead of the image's entrypoint. The entrypoint turns on Database Actions, REST-enabled SQL and the MongoDB API at every start, which would override your settings.
    - **Locked down:** every container runs as the image's `oracle` user (UID 54321), never as root, with no Linux capabilities, no Kubernetes API token, and memory limits (3 GiB for ORDS). The APEX images cache, `/var/cache/ords-apex` on each worker, is created by `node-prep.sh` and owned by that user.
    - **Health checks** connect over HTTPS and send `Host: www.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
-   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://www.1apx.com/...`. It accepts connections only from Cloudflare's addresses and the cluster's nodes (see [Public access through Cloudflare](#public-access-through-cloudflare)). It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
+   - **Service** on `192.168.1.180`: port **443**, HTTPS only (Cloudflare redirects `http://` to `https://` before traffic reaches the cluster). It accepts connections only from Cloudflare's addresses and the cluster's nodes (see [Public access through Cloudflare](#public-access-through-cloudflare)). It doesn't allocate NodePorts, because MetalLB answers on the LAN IP directly.
    - **Root redirect:** `https://www.1apx.com/` (no path) shows a small page in each pod that sends the browser on to `/apps/`.
    - **Image pinned by digest** (`ORDS_IMAGE` is `...:26.2.3@sha256:...`), so the image can't change even if Oracle re-publishes the tag.
 
@@ -373,7 +372,7 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 
 ## Validation and CI
 
-[`ci/validate.sh`](ci/validate.sh) checks the whole repo. Run it before every commit, as `vaviles`: `ci/validate.sh`, or `ci/validate.sh --offline` without internet access. It exits non-zero if any check fails. GitHub Actions runs it on every push and pull request ([`.github/workflows/validate.yml`](.github/workflows/validate.yml)).
+[`ci/validate.sh`](ci/validate.sh) checks the whole repo. Run it before every commit, as `vaviles`: `ci/validate.sh`, or `ci/validate.sh --offline` without internet access (after one online run, which fills its cache). It exits non-zero if any check fails. GitHub Actions runs it on every push and pull request, and every Monday, because its online checks (Cloudflare's ranges, the pinned upstream files) can start failing with no change in the repo ([`.github/workflows/validate.yml`](.github/workflows/validate.yml)).
 
 | Area | What it checks |
 |------|----------------|
@@ -383,7 +382,7 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 | Upstream | Every manifest the scripts download is pinned in `upstream.sha256` (and nothing else is). Online: each pin still matches upstream, and Calico's Installation with our pod CIDR is valid |
 | Documentation | Every relative link and `#anchor` in the README resolves, and [Contents](#contents) lists every section and subsection, in order. `docs/architecture.svg` is exactly what `docs/architecture.py` generates, so the diagram can't drift from its source, and the generator's own checks pass (labels fit their boxes, no arrow crosses a label, no text under 14 px) |
 | Hygiene | LF line endings, no trailing whitespace, a final newline in every file |
-| Secrets | gitleaks over the whole git history; no key, certificate or kubeconfig file tracked |
+| Secrets | gitleaks over the files staged for the next commit and the whole git history; no key, certificate or kubeconfig file tracked |
 
 The tools (ShellCheck, kubeconform, kubeadm, gitleaks, and the Arimo font the diagram is measured with) are downloaded on first use, checked against pinned SHA-256s, and cached in `~/.cache/ubuntu-repo-tools`. The script also needs Python's yaml module (`python3-yaml`, installed on k8-control).
 
@@ -484,11 +483,11 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | Practice | Where |
 |----------|-------|
 | Its own namespace, `ords`, so its network policy, Secrets and permissions apply to ORDS alone | `namespace.yaml` |
-| A NetworkPolicy blocks everything not listed. In: only ORDS's ports 8443 and 8080. Out: only DNS (CoreDNS), the database port and HTTPS | `network-policy.yaml` |
+| A NetworkPolicy blocks everything not listed. In: only ORDS's HTTPS port, 8443. Out: only DNS (CoreDNS), the database port and HTTPS | `network-policy.yaml` |
 | The Service allocates no NodePorts; ORDS is reachable only on its MetalLB address, `192.168.1.180` | `ords.yaml` |
 | From the internet, ORDS is reachable only through Cloudflare: the Service admits only Cloudflare's address ranges and the three nodes (`loadBalancerSourceRanges`), not the whole LAN, in case the router rewrites forwarded connections' source, so Cloudflare's DDoS and bot protection can't be bypassed. `ci/validate.sh` checks the ranges against Cloudflare's published list | `ords.yaml`, `ci/validate.sh` |
 | HTTPS all the way: browsers to Cloudflare, and Cloudflare to ORDS with the certificate checked (SSL mode Full (strict)) | Cloudflare (see [Public access](#public-access-through-cloudflare)) |
-| HTTPS only: HTTP answers with a redirect to HTTPS (`security.forceHTTPS`), with the full certificate chain served | `ords-settings.conf`, `deploy-ords.sh` |
+| HTTPS only: the Service and network policy admit only HTTPS, Cloudflare redirects `http://` to `https://`, and ORDS serves the full certificate chain | `ords.yaml`, `network-policy.yaml`, `deploy-ords.sh` |
 
 **ORDS pods**
 
@@ -509,7 +508,7 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | The SYS password is used only by the one-time install Job and deleted from the cluster right after, even if the script fails or is interrupted. The ORDS pods never see it | `deploy-ords.sh` |
 | The `ORDS_PUBLIC_USER` password Secret is mounted only into the init container that writes ORDS's config, where it goes into ORDS's encrypted wallet. The ORDS container itself never mounts it | `ords.yaml` |
 | The TLS key is readable only by the pod's group (`0440`) | `ords.yaml` |
-| No keys, certificates, kubeconfigs or passwords in git: `.gitignore` excludes them and gitleaks scans the whole history on every push | `.gitignore`, `ci/validate.sh` |
+| No keys, certificates, kubeconfigs or passwords in git: `.gitignore` excludes them, and gitleaks scans the files staged for commit and the whole history | `.gitignore`, `ci/validate.sh` |
 
 **Known gaps (accepted or still open)**
 
@@ -523,6 +522,7 @@ Commands run on k8-control as `vaviles` unless marked `sudo`. ORDS lives in the 
 | metrics-server doesn't verify kubelets' certificates | The usual kubeadm setting. Verifying them means approving kubelet certificates by hand every year |
 | `vaviles` and `k8sadmin` have passwordless sudo | Chosen for automation (see the top of this README) |
 | One control-plane node | See [Running the cluster](#running-the-cluster) |
+| Containers' root filesystems are writable (`readOnlyRootFilesystem` isn't set) | ORDS writes temporary files; a read-only root filesystem with writable `emptyDir` folders for them would need testing on the real image first |
 
 ### B.2 Day-to-day operations
 

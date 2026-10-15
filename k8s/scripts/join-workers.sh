@@ -42,7 +42,11 @@ done
 
 echo "Waiting for all nodes to be Ready..."
 for w in "${WORKERS[@]}"; do
-  until kubectl get node "$w" >/dev/null 2>&1; do sleep 5; done
+  for i in $(seq 1 60); do   # up to 5 minutes to register after joining
+    kubectl get node "$w" >/dev/null 2>&1 && break
+    [ "$i" -lt 60 ] || { echo "$w didn't register; on it: sudo journalctl -u kubelet -n 50" >&2; exit 1; }
+    sleep 5
+  done
   kubectl wait --for=condition=Ready "node/$w" --timeout=600s
   kubectl label node "$w" node-role.kubernetes.io/worker= --overwrite
 done

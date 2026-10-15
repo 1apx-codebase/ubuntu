@@ -12,6 +12,10 @@ KEEP_DAYS=14
 [ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
 stamp=$(date +%F-%H%M%S)
 install -d -m 0700 "$BACKUP_DIR"
+# The snapshot is written in etcd's data folder (the container sees it), under a name of its
+# own, so overlapping runs can't clash; it's removed from there if anything fails
+snap=/var/lib/etcd/backup-$stamp-$$.db
+trap 'rm -f "$snap"' EXIT
 
 # etcdctl runs inside the etcd container, which has the client certificates mounted.
 # crictl reaches it through containerd, so this works even when the API server is down.
@@ -22,10 +26,10 @@ crictl exec "$cid" etcdctl \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
   --cert=/etc/kubernetes/pki/etcd/server.crt \
   --key=/etc/kubernetes/pki/etcd/server.key \
-  snapshot save /var/lib/etcd/backup.db
+  snapshot save "$snap"
 # Check the snapshot is readable before keeping it
-crictl exec "$cid" etcdutl snapshot status /var/lib/etcd/backup.db -w table
-mv /var/lib/etcd/backup.db "$BACKUP_DIR/etcd-$stamp.db"
+crictl exec "$cid" etcdutl snapshot status "$snap" -w table
+mv "$snap" "$BACKUP_DIR/etcd-$stamp.db"
 
 # Certificates, kubeconfigs and static pod manifests are needed to restore the snapshot
 tar -czf "$BACKUP_DIR/kubernetes-etc-$stamp.tgz" -C / etc/kubernetes

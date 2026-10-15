@@ -83,7 +83,11 @@ kubectl apply -f "$dl/custom-resources.yaml"
 
 # 4. Wait for the network and the node
 echo "Waiting for Calico to start (a few minutes)..."
-until kubectl get daemonset calico-node -n calico-system >/dev/null 2>&1; do sleep 5; done
+for i in $(seq 1 120); do   # up to 10 minutes for the operator to create it
+  kubectl get daemonset calico-node -n calico-system >/dev/null 2>&1 && break
+  [ "$i" -lt 120 ] || { echo "Calico didn't start; see: kubectl get pods -n tigera-operator" >&2; exit 1; }
+  sleep 5
+done
 kubectl rollout status daemonset/calico-node -n calico-system --timeout=600s
 kubectl wait --for=condition=Ready node/k8-control --timeout=300s
 kubectl get nodes -o wide

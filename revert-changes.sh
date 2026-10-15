@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Undo apply-changes.sh: remove the sudo rule and go back to DHCP.
+# Run as root from the console (the IP changes): sudo ./revert-changes.sh
 set -euo pipefail
 
 # Must match apply-changes.sh

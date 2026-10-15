@@ -126,11 +126,9 @@ if [ "$ENABLE_FIREWALL" = true ]; then
     ufw allow from "$ip" to any port 7946 comment 'MetalLB memberlist' >/dev/null
   done
   if [ "$(hostname -s)" = "$CONTROL_PLANE" ]; then
-    # API server: nodes and admins on the LAN. etcd, scheduler and controller-manager
-    # only listen on this node and need no rule.
+    # API server: nodes and admins on the LAN. etcd, the scheduler and the controller
+    # manager get no rule, so only this node can reach them.
     ufw allow from "$LAN" to any port 6443 proto tcp comment 'Kubernetes API' >/dev/null
-  else
-    ufw allow from "$LAN" to any port 30000:32767 proto tcp comment 'NodePort services' >/dev/null
   fi
   ufw --force enable >/dev/null
 fi

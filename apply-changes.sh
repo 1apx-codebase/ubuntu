@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Apply k8-control's post-install changes: passwordless sudo for USER_NAME, and a static IP
+# with DNS servers. Run as root from the console (the IP changes): sudo ./apply-changes.sh
 set -euo pipefail
 
 USER_NAME=vaviles

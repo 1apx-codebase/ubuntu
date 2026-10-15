@@ -21,8 +21,8 @@ LB_IP=192.168.1.180               # in the MetalLB pool, manifests/addons/metall
 DB_HOST=node.1apx.com
 DB_PORT=1521
 DB_SERVICE=pdb1                   # the PDB service name, not the CDB
-# IP of DB_HOST, only if DB_HOST has no DNS record (node.1apx.com didn't resolve when
-# this was written). The pods then map DB_HOST to this IP, like an /etc/hosts entry.
+# IP of DB_HOST, if DB_HOST has no DNS record the pods can resolve. The pods then map
+# DB_HOST to this IP, like an /etc/hosts entry.
 DB_HOST_IP=
 
 # APEX version for the /i/ static images, as major.minor (24.2, 26.1, ...).

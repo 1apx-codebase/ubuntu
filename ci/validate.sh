@@ -2,7 +2,8 @@
 # Validate the whole repo: scripts, Kubernetes manifests, values that must agree across
 # files, pinned upstream downloads, file hygiene, and secrets in the git history.
 # Run from anywhere: ci/validate.sh [--offline]. GitHub Actions runs it on every push.
-# --offline skips the checks that need the internet (upstream hashes, Calico's file).
+# --offline skips the checks that need the internet (upstream hashes, Calico's file,
+# Cloudflare's ranges); it needs one online run first, to fill the tool and schema cache.
 # Tools are downloaded once, checked against pinned SHA-256s, into ~/.cache/ubuntu-repo-tools.
 set -euo pipefail
 
@@ -44,9 +45,15 @@ K8S_VERSION=$(var "$K8S/scripts/node-prep.sh" K8S_VERSION)
 SHELLCHECK=$(tool shellcheck https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87)
 KUBECONFORM=$(tool kubeconform https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883)
 GITLEAKS=$(tool gitleaks https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb)
-# kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own hash
+# kubeadm is the version the cluster uses (node-prep.sh), checked against Kubernetes' own
+# hash, which is fetched only the first time (the cached binary is kept per version)
 KUBEADM_URL="https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/kubeadm"
-KUBEADM=$(tool kubeadm "$KUBEADM_URL" "$(curl -fsSL "$KUBEADM_URL.sha256")")
+KUBEADM=$(find "$TOOLS" -path "$TOOLS/kubeadm-*" -name kubeadm -newer /dev/null 2>/dev/null \
+  | while read -r k; do [ "$("$k" version -o short 2>/dev/null)" = "v$K8S_VERSION" ] && echo "$k"; done | head -1)
+if [ -z "$KUBEADM" ]; then
+  KUBEADM_SHA=$(curl -fsSL "$KUBEADM_URL.sha256")
+  KUBEADM=$(tool kubeadm "$KUBEADM_URL" "$KUBEADM_SHA")
+fi
 # Arimo (Arial's metrics) for docs/architecture.py, pinned to a google/fonts commit
 ARIMO=$(tool arimo.ttf https://raw.githubusercontent.com/google/fonts/d7b3b07542b00e0ec7c48886d305eb8f08ef89d5/ofl/arimo/Arimo%5Bwght%5D.ttf e43898b143ec826ac8cb4034816458a7047fbe0836558de2a1f8c6223ae3e0ca)
 python3 -c 'import yaml' 2>/dev/null || { echo "Needs Python's yaml module (apt install python3-yaml)." >&2; exit 1; }
@@ -75,11 +82,17 @@ for m in "$K8S"/manifests/ords/*.yaml; do
   bash "$K8S/scripts/deploy-ords.sh" --render "$m" > "$work/rendered/$n.yaml"
   bash "$work/deploy-ords-hostalias.sh" --render "$m" > "$work/rendered/$n-hostalias.yaml"
 done
-cp "$K8S/manifests/addons/"*.yaml "$work/rendered/"
 if grep -l '__[A-Z_]*__' "$work"/rendered/*.yaml; then fail "placeholders left after rendering"; fi
 CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-check "kubeconform (Kubernetes $K8S_VERSION schemas)" "$KUBECONFORM" -strict -summary \
-  -kubernetes-version "$K8S_VERSION" -schema-location default -schema-location "$CRDS" "$work"/rendered/*.yaml
+# Schemas are cached, so later runs (and --offline) don't need to download them
+mkdir -p "$TOOLS/kubeconform-cache"
+KUBECONFORM=("$KUBECONFORM" -cache "$TOOLS/kubeconform-cache")
+check "kubeconform: ORDS manifests (Kubernetes $K8S_VERSION schemas)" "${KUBECONFORM[@]}" -strict -summary \
+  -kubernetes-version "$K8S_VERSION" -schema-location default "$work"/rendered/*.yaml
+# MetalLB's resources are CRDs: only the CRD catalog has their schemas (asking the default
+# location first would fail offline instead of falling through to the cached catalog)
+check "kubeconform: MetalLB pool (CRD schemas)" "${KUBECONFORM[@]}" -strict -summary \
+  -schema-location "$CRDS" "$K8S"/manifests/addons/*.yaml
 if "$KUBEADM" config validate --config "$K8S/manifests/kubeadm-config.yaml" >/dev/null; then
   pass "kubeadm $K8S_VERSION config validate"
 else
@@ -182,7 +195,7 @@ if [ "$ONLINE" = true ]; then
   curl -fsSL "${expected[2]}" | sed "s|cidr: 192.168.0.0/16|cidr: $(var "$K8S/scripts/node-prep.sh" POD_CIDR)|" \
     | python3 -c 'import sys,yaml; print(yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Installation"]))' \
     > "$work/calico-installation.yaml"
-  check "Calico Installation with our pod CIDR" "$KUBECONFORM" -strict -kubernetes-version "$K8S_VERSION" \
+  check "Calico Installation with our pod CIDR" "${KUBECONFORM[@]}" -strict -kubernetes-version "$K8S_VERSION" \
     -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
   # The ORDS Service admits Cloudflare's current IPv4 ranges (plus the nodes), no more, no less
   cf_live=$(curl -fsSL https://www.cloudflare.com/ips-v4 | grep -oE '^[0-9.]+/[0-9]+' | sort)
@@ -252,7 +265,16 @@ if "$GITLEAKS" git --no-banner --redact "$ROOT" >/dev/null 2>&1; then
   pass "gitleaks: no secrets in the git history"
 else
   "$GITLEAKS" git --no-banner --redact -v "$ROOT" >&2 || true
-  fail "gitleaks found secrets"
+  fail "gitleaks found secrets in the git history"
+fi
+# The files staged for the next commit (git's index), so a secret is caught before it's
+# committed. Only tracked and staged files: the git-ignored ssl/ folder isn't scanned.
+git checkout-index -a -f --prefix="$work/staged/"
+if "$GITLEAKS" dir --no-banner --redact "$work/staged" >/dev/null 2>&1; then
+  pass "gitleaks: no secrets in the files staged for commit"
+else
+  "$GITLEAKS" dir --no-banner --redact -v "$work/staged" >&2 || true
+  fail "gitleaks found secrets in the files staged for commit"
 fi
 if git ls-files | grep -E '(^|/)ssl/|\.(key|pem|p12|jks|pfx)$|kubeconfig|admin\.conf'; then
   fail "key, certificate or kubeconfig files are tracked (above)"

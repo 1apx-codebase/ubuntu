@@ -1,10 +1,17 @@
-# Runs ci/validate.sh on every push and pull request.
+# Runs ci/validate.sh on every push and pull request, and weekly: its online checks
+# (Cloudflare's address ranges, the pinned upstream files) can fail with no change here.
 name: validate
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "23 6 * * 1"        # Mondays 06:23 UTC
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   validate:
     runs-on: ubuntu-24.04

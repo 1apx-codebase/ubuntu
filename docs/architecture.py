@@ -197,7 +197,7 @@ text(W / 2, ctl[1] + 218, "ufw: SSH and the Kubernetes API from the LAN only", S
 svc = (INNER_X, 596, INNER_W, 92)
 labeled_box(*svc, ["Service ords · LoadBalancer · 192.168.1.180",
                    "MetalLB layer 2 · admits only Cloudflare and the nodes",
-                   ":443 → pods 8443 (HTTPS) · :80 → 8080 (redirects to HTTPS)"],
+                   ":443 → ORDS pods on port 8443 (HTTPS only)"],
             C["pod"], C["podline"], size=BODY, gap=22)
 
 # Workers
@@ -216,7 +216,7 @@ for vm in (w1, w2):
     x, _, w, _ = vm
     labeled_box(x + 30, POD_Y, w - 60, 160,
                 ["ORDS pod", "ords:26.2.3 (pinned by digest)", "init: apex-images, config",
-                 "ords serve · HTTPS 8443 · HTTP 8080", "UID 54321 · no capabilities"],
+                 "ords serve · HTTPS on port 8443", "UID 54321 · no capabilities"],
                 C["pod"], C["podline"], r=8, size=BODY, gap=25)
     for j, label in enumerate(["kubelet · containerd · kube-proxy", "Calico node · MetalLB speaker",
                                "/var/cache/ords-apex (APEX images)"]):
