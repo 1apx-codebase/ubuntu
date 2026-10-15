@@ -41,14 +41,25 @@ MANIFESTS="$K8S/manifests/ords"
 ORDS_TAG=${ORDS_IMAGE##*:}
 HOST_ALIASES="[]"
 [ -z "$DB_HOST_IP" ] || HOST_ALIASES="[{ip: \"$DB_HOST_IP\", hostnames: [\"$DB_HOST\"]}]"
+CONFIG_HASH=                      # set in step 7
 render() {
   sed -e "s|__ORDS_IMAGE__|$ORDS_IMAGE|g" -e "s|__ORDS_HOSTNAME__|$ORDS_HOSTNAME|g" -e "s|__LB_IP__|$LB_IP|g" \
-      -e "s|hostAliases: \[\]|hostAliases: $HOST_ALIASES|" "$1"
+      -e "s|__CONFIG_HASH__|$CONFIG_HASH|g" -e "s|hostAliases: \[\]|hostAliases: $HOST_ALIASES|" "$1"
 }
 if [ -z "$DB_HOST_IP" ] && ! getent hosts "$DB_HOST" >/dev/null; then
   echo "$DB_HOST doesn't resolve. Add a DNS record for it, or set DB_HOST_IP in this script." >&2
   exit 1
 fi
+
+# Private work folder (0700) for the TLS files and passwords while they're stored.
+# On any exit it's removed, and the SYS password is deleted from the cluster if it's there.
+work=$(mktemp -d)
+sys_secret=false
+cleanup() {
+  rm -rf "$work"
+  [ "$sys_secret" = false ] || kubectl delete secret ords-db-admin -n "$NAMESPACE" --ignore-not-found >/dev/null
+}
+trap cleanup EXIT
 
 ask_password() {   # ask_password "label" -> prints the password; never echoed or saved
   local a b
@@ -62,12 +73,10 @@ ask_password() {   # ask_password "label" -> prints the password; never echoed o
 }
 
 secret_from_value() {   # secret_from_value name key value (keeps the value off the command line)
-  local d
-  d=$(mktemp -d)
-  printf '%s' "$3" > "$d/$2"
-  kubectl create secret generic "$1" -n "$NAMESPACE" --from-file="$2=$d/$2" \
+  printf '%s' "$3" > "$work/$2"
+  kubectl create secret generic "$1" -n "$NAMESPACE" --from-file="$2=$work/$2" \
     --dry-run=client -o yaml | kubectl apply -f -
-  rm -rf "$d"
+  rm -f "$work/$2"
 }
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
@@ -82,17 +91,14 @@ openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -checkend 0 >/dev/null \
   || { echo "The certificate has expired." >&2; exit 1; }
 openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -checkend $((30*86400)) >/dev/null \
   || echo "WARNING: the certificate expires within 30 days: $(openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -enddate)"
-tls=$(mktemp -d)
-trap 'rm -rf "$tls"' EXIT
-chmod 700 "$tls"
-cat "$SSL_DIR/$CERT_FILE" "$SSL_DIR/$CHAIN_FILE" > "$tls/tls.crt"
-openssl pkey -in "$SSL_DIR/$KEY_FILE" -out "$tls/tls.key"
-[ "$(openssl x509 -in "$tls/tls.crt" -noout -pubkey | openssl sha256)" = \
-  "$(openssl pkey -in "$tls/tls.key" -pubout | openssl sha256)" ] \
+cat "$SSL_DIR/$CERT_FILE" "$SSL_DIR/$CHAIN_FILE" > "$work/tls.crt"
+openssl pkey -in "$SSL_DIR/$KEY_FILE" -out "$work/tls.key"
+[ "$(openssl x509 -in "$work/tls.crt" -noout -pubkey | openssl sha256)" = \
+  "$(openssl pkey -in "$work/tls.key" -pubout | openssl sha256)" ] \
   || { echo "$KEY_FILE doesn't match $CERT_FILE." >&2; exit 1; }
-kubectl create secret tls ords-tls -n "$NAMESPACE" --cert="$tls/tls.crt" --key="$tls/tls.key" \
+kubectl create secret tls ords-tls -n "$NAMESPACE" --cert="$work/tls.crt" --key="$work/tls.key" \
   --dry-run=client -o yaml | kubectl apply -f -
-rm -rf "$tls"
+rm -f "$work/tls.crt" "$work/tls.key"
 echo "Certificate: $(openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -subject -enddate | tr '\n' ' ')"
 
 # 2. ORDS_PUBLIC_USER password
@@ -101,14 +107,15 @@ if ! kubectl get secret ords-db-runtime -n "$NAMESPACE" >/dev/null 2>&1; then
   secret_from_value ords-db-runtime ORACLE_USER_PWD "$(ask_password 'ORDS_PUBLIC_USER password')"
 fi
 
-# 3. Database connection details (not secret)
+# 3. Database connection details (not secret). write_db_config <APEX version>
 write_db_config() {
   kubectl create configmap ords-db -n "$NAMESPACE" \
     --from-literal=DB_HOST="$DB_HOST" --from-literal=DB_PORT="$DB_PORT" \
-    --from-literal=DB_SERVICE="$DB_SERVICE" --from-literal=APEX_VERSION="$APEX_VERSION" \
+    --from-literal=DB_SERVICE="$DB_SERVICE" --from-literal=APEX_VERSION="$1" \
     --dry-run=client -o yaml | kubectl apply -f -
 }
-write_db_config
+# For the preflight check; keeps the APEX version already stored until step 5 sets it
+write_db_config "$(kubectl get configmap ords-db -n "$NAMESPACE" -o jsonpath='{.data.APEX_VERSION}' 2>/dev/null || true)"
 
 # 4. Preflight: log in as ORDS_PUBLIC_USER and read the ORDS and APEX versions
 #    (the first run also downloads the ORDS image, which takes a few minutes)
@@ -121,6 +128,13 @@ for _ in $(seq 1 120); do
   sleep 5
 done
 out=$(kubectl logs ords-preflight -n "$NAMESPACE" 2>&1 || true)
+if [ "$phase" != Succeeded ] && [ "$phase" != Failed ]; then
+  # Never finished: usually the image can't be pulled or the pod can't be scheduled
+  kubectl describe pod ords-preflight -n "$NAMESPACE" | tail -15 >&2 || true
+  kubectl delete pod ords-preflight -n "$NAMESPACE" --ignore-not-found >/dev/null
+  echo "The preflight pod didn't finish within 10 minutes (phase: ${phase:-unknown}); see the events above." >&2
+  exit 1
+fi
 kubectl delete pod ords-preflight -n "$NAMESPACE" --ignore-not-found >/dev/null
 if ! grep -q LOGIN_OK <<<"$out"; then
   echo "$out" | tail -20 >&2
@@ -141,11 +155,11 @@ if [ -n "$APEX_VERSION" ]; then
     || echo "WARNING: APEX_VERSION=$APEX_VERSION but the database has APEX $db_apex."
   curl -fsI "https://download.oracle.com/otn_software/apex/apex_${APEX_VERSION}.zip" >/dev/null \
     || { echo "No APEX download for version $APEX_VERSION (apex_${APEX_VERSION}.zip)." >&2; exit 1; }
-  write_db_config
   echo "Serving APEX $APEX_VERSION images at /i/"
 else
   echo "WARNING: no APEX version found, so /i/ will have no APEX images."
 fi
+write_db_config "$APEX_VERSION"
 
 # 6. ORDS schema: must match the image, unless we install or upgrade it
 if [ "$db_ords" != "$ORDS_TAG" ]; then
@@ -156,6 +170,7 @@ if [ "$db_ords" != "$ORDS_TAG" ]; then
     exit 1
   fi
   echo "Enter the SYS password for $DB_HOST:$DB_PORT/$DB_SERVICE. It's used once and then deleted."
+  sys_secret=true
   secret_from_value ords-db-admin ORACLE_PWD "$(ask_password 'SYS password')"
   kubectl delete job ords-install -n "$NAMESPACE" --ignore-not-found
   render "$MANIFESTS/ords-install-job.yaml" | kubectl apply -f -
@@ -173,20 +188,24 @@ if [ "$db_ords" != "$ORDS_TAG" ]; then
   done
   if [ "$result" != complete ]; then
     kubectl logs job/ords-install -n "$NAMESPACE" --tail=50 || true
-    kubectl delete secret ords-db-admin -n "$NAMESPACE" --ignore-not-found
     echo "The ORDS install ${result:-timed out after 30 minutes}; see the log above." >&2
     exit 1
   fi
   kubectl logs job/ords-install -n "$NAMESPACE" --tail=5
   kubectl delete secret ords-db-admin -n "$NAMESPACE"
+  sys_secret=false
   echo "Removed the SYS password from the cluster."
 fi
 
 # 7. ORDS settings and deployment
 kubectl create configmap ords-settings -n "$NAMESPACE" --from-file="$K8S/config/ords-settings.conf" \
   --dry-run=client -o yaml | kubectl apply -f -
+# The pods read these only when they start, so a hash of their contents goes into the
+# pod template: the pods are replaced (one at a time) only when something has changed
+CONFIG_HASH=$(for r in configmap/ords-db configmap/ords-settings secret/ords-tls secret/ords-db-runtime; do
+  kubectl get "$r" -n "$NAMESPACE" -o jsonpath='{.data}'; echo
+done | sha256sum | cut -c1-16)
 render "$MANIFESTS/ords.yaml" | kubectl apply -f -
-kubectl rollout restart deployment/ords -n "$NAMESPACE"   # pick up changed settings or certificate
 kubectl rollout status deployment/ords -n "$NAMESPACE" --timeout=20m
 kubectl get pods,svc -n "$NAMESPACE" -o wide
 

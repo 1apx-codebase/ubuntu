@@ -36,6 +36,12 @@ ssh-keygen -lf "$key"
 # Template VM from the cloud image (built once)
 if ! qm status "$TEMPLATE_ID" >/dev/null 2>&1; then
   [ -f "$IMAGE" ] || wget -q --show-progress -O "$IMAGE" "$IMAGE_URL"
+  # Check the image against Ubuntu's published checksum before using it
+  sum=$(wget -qO- "${IMAGE_URL%/*}/SHA256SUMS" | awk -v f="*${IMAGE_URL##*/}" '$2 == f {print $1}')
+  if [ -z "$sum" ] || ! echo "$sum  $IMAGE" | sha256sum -c --quiet -; then
+    echo "$IMAGE doesn't match Ubuntu's SHA256SUMS; delete it and re-run." >&2
+    exit 1
+  fi
   qm create "$TEMPLATE_ID" --name ubuntu-2604-cloud --ostype l26 --cpu host --cores 2 --memory 2048 \
     --net0 "virtio,bridge=$BRIDGE" --scsihw virtio-scsi-single --agent enabled=1 \
     --serial0 socket --vga serial0

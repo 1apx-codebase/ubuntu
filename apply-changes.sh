@@ -20,10 +20,10 @@ fi
 
 # 1. Passwordless sudo: validate a temp file before installing it, so a typo can't break sudo
 f=$(mktemp)
+trap 'rm -f "$f"' EXIT
 echo "$USER_NAME ALL=(ALL:ALL) NOPASSWD: ALL" > "$f"
 visudo -cf "$f"
 install -m 0440 -o root -g root "$f" "/etc/sudoers.d/$USER_NAME-nopasswd"
-rm -f "$f"
 visudo -c
 
 # 2 + 3. Static IP and DNS: back up the current netplan config, then write the new one

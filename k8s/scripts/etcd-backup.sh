@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Back up the cluster state: an etcd snapshot plus the control plane's certificates and config.
 # Run on k8-control as root: sudo ./etcd-backup.sh
-# Schedule it daily, e.g. /etc/cron.d/etcd-backup:
-#   30 2 * * * root /home/vaviles/codebase/github/ubuntu/k8s/scripts/etcd-backup.sh
+# Schedule it daily from a root-owned copy, so root's cron never runs a file in a user's home:
+#   sudo install -m 0755 k8s/scripts/etcd-backup.sh /usr/local/sbin/etcd-backup.sh
+#   echo '30 2 * * * root /usr/local/sbin/etcd-backup.sh' | sudo tee /etc/cron.d/etcd-backup
 set -euo pipefail
 
 BACKUP_DIR=/var/backups/kubernetes
@@ -22,6 +23,8 @@ crictl exec "$cid" etcdctl \
   --cert=/etc/kubernetes/pki/etcd/server.crt \
   --key=/etc/kubernetes/pki/etcd/server.key \
   snapshot save /var/lib/etcd/backup.db
+# Check the snapshot is readable before keeping it
+crictl exec "$cid" etcdutl snapshot status /var/lib/etcd/backup.db -w table
 mv /var/lib/etcd/backup.db "$BACKUP_DIR/etcd-$stamp.db"
 
 # Certificates, kubeconfigs and static pod manifests are needed to restore the snapshot

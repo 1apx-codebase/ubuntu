@@ -33,6 +33,11 @@ done
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
 # 3. Calico pod network, using our pod CIDR instead of Calico's 192.168.0.0/16 default (overlaps the LAN)
+#    Since Calico 3.30 the operator's CRDs are in their own file, installed first.
+#    "create", not "apply": the CRDs are too large for apply's last-applied annotation.
+if ! kubectl get crd installations.operator.tigera.io >/dev/null 2>&1; then
+  kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/operator-crds.yaml"
+fi
 if ! kubectl get namespace tigera-operator >/dev/null 2>&1; then
   kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/tigera-operator.yaml"
 fi

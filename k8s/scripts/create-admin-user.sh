@@ -25,10 +25,10 @@ chmod 0750 "$home"
 
 # 2. Passwordless sudo, validated before installing so a typo can't break sudo
 f=$(mktemp)
+trap 'rm -f "$f"' EXIT
 echo "$ADMIN_USER ALL=(ALL:ALL) NOPASSWD: ALL" > "$f"
 visudo -cf "$f" >/dev/null
 install -m 0440 -o root -g root "$f" "/etc/sudoers.d/$ADMIN_USER"
-rm -f "$f"
 visudo -c >/dev/null
 
 # 3. SSH key used to log in to the workers

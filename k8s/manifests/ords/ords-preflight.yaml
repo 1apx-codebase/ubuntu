@@ -10,6 +10,8 @@ metadata:
     app: ords-preflight
 spec:
   restartPolicy: Never
+  activeDeadlineSeconds: 900     # stop it if it hangs (deploy-ords.sh waits 10 minutes)
+  automountServiceAccountToken: false
   hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
   securityContext:
     runAsNonRoot: true
@@ -42,6 +44,12 @@ spec:
         allowPrivilegeEscalation: false
         capabilities:
           drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 1Gi
       volumeMounts:
         - name: runtime
           mountPath: /run/secrets/ords-runtime

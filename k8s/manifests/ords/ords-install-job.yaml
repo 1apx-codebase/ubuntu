@@ -10,6 +10,7 @@ metadata:
     app: ords-install
 spec:
   backoffLimit: 2
+  activeDeadlineSeconds: 1800     # the same 30 minutes deploy-ords.sh waits
   ttlSecondsAfterFinished: 86400
   template:
     metadata:
@@ -17,6 +18,7 @@ spec:
         app: ords-install
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
       securityContext:
         runAsNonRoot: true

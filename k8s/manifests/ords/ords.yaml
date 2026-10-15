@@ -1,6 +1,6 @@
 # ORDS: two stateless replicas, one per worker, behind a MetalLB LAN IP, serving HTTPS
 # with the *.1apx.com certificate. Applied by deploy-ords.sh, which replaces
-# __ORDS_IMAGE__, __ORDS_HOSTNAME__ and __LB_IP__.
+# __ORDS_IMAGE__, __ORDS_HOSTNAME__, __LB_IP__ and __CONFIG_HASH__.
 #
 # Each pod builds its own ORDS config in an emptyDir at start, from:
 #   ords-db ConfigMap        database host/port/service and APEX version
@@ -30,8 +30,12 @@ spec:
     metadata:
       labels:
         app: ords
+      annotations:
+        # Hash of the ConfigMaps and Secrets below: a change replaces the pods
+        ords.1apx.com/config-hash: "__CONFIG_HASH__"
     spec:
       hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
+      automountServiceAccountToken: false   # ORDS doesn't use the Kubernetes API
       securityContext:
         runAsNonRoot: true
         runAsUser: 54321            # "oracle" user in the ORDS image
@@ -48,8 +52,8 @@ spec:
             matchLabels:
               app: ords
       initContainers:
-        # APEX static images (/i/), downloaded once per worker and kept in /var/cache/ords-apex.
-        # Runs as root only to write that host directory.
+        # APEX static images (/i/), downloaded once per worker and kept in /var/cache/ords-apex,
+        # which node-prep.sh creates owned by the oracle user
         - name: apex-images
           image: __ORDS_IMAGE__
           command: ["/bin/bash", "-c"]
@@ -63,20 +67,30 @@ spec:
               rm -rf "$tmp" && mkdir -p "$tmp" && cd "$tmp"
               echo "Downloading APEX $APEX_VERSION images..."
               curl -fsSL --retry 3 -o apex.zip "https://download.oracle.com/otn_software/apex/apex_${APEX_VERSION}.zip"
-              jar xf apex.zip apex/images
-              rm -rf "$dir" && mv apex/images "$dir"
+              if command -v unzip >/dev/null; then unzip -q apex.zip 'apex/images/*'; else jar xf apex.zip apex/images; fi
+              chmod -R a+rX apex/images && touch apex/images/.complete
+              # Another pod on this node may have finished first: never replace a complete
+              # folder, and move ours into place in one step so it's never seen half-written
+              if [ -f "$dir/.complete" ]; then
+                echo "APEX $APEX_VERSION images were installed by another pod"
+              else
+                rm -rf "$dir" && mv apex/images "$dir"
+                echo "APEX $APEX_VERSION images ready"
+              fi
               cd / && rm -rf "$tmp"
-              chmod -R a+rX "$dir" && touch "$dir/.complete"
-              echo "APEX $APEX_VERSION images ready"
           envFrom:
             - configMapRef:
                 name: ords-db
           securityContext:
-            runAsUser: 0
-            runAsNonRoot: false
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           volumeMounts:
             - name: apex-cache
               mountPath: /apex-cache
@@ -110,6 +124,12 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           volumeMounts:
             - name: config
               mountPath: /etc/ords/config
@@ -130,6 +150,12 @@ spec:
               containerPort: 8443
             - name: http             # only redirects to HTTPS (security.forceHTTPS)
               containerPort: 8080
+          # On shutdown, keep serving for a few seconds while the Service and MetalLB
+          # stop sending new connections here, so rolling updates don't drop requests
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -196,7 +222,7 @@ spec:
         - name: apex-cache
           hostPath:
             path: /var/cache/ords-apex
-            type: DirectoryOrCreate
+            type: Directory          # created by node-prep.sh, owned by UID 54321
 ---
 # Keep at least one ORDS pod running during node drains and upgrades
 apiVersion: policy/v1
