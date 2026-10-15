@@ -324,7 +324,7 @@ Check the variables at the top of `deploy-ords.sh`, which already hold your curr
 
 **What the script does:**
 
-1. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's HTTPS port, 8443, and can only reach DNS, the database port (1521) and HTTPS (443, for the APEX images download). Everything else is blocked.
+1. **Namespace and network policy.** Creates the `ords` namespace from [`namespace.yaml`](k8s/manifests/ords/namespace.yaml), and applies [`network-policy.yaml`](k8s/manifests/ords/network-policy.yaml), which Calico enforces for every pod in it. Pods accept connections only on ORDS's HTTPS port, 8443, and can only reach DNS, the database (its own address, port 1521) and HTTPS (443, for the APEX images download). Everything else is blocked. The database's address is `DB_HOST_IP`, or what `node.1apx.com` resolves to when the script runs, so re-run the script if the database's address changes.
 2. **Certificate.** Checks that it covers `www.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret.
 3. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
 4. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB). If the pod hasn't finished after 10 minutes (usually because the image can't be downloaded), the script shows the pod's events and stops.
@@ -389,6 +389,8 @@ For the security measures in place, day-to-day commands and a troubleshooting gu
 The tools (ShellCheck, kubeconform, kubeadm, gitleaks, and the Arimo font the diagram is measured with) are downloaded on first use, checked against pinned SHA-256s, and cached in `~/.cache/ubuntu-repo-tools`. The script also needs Python's yaml module (`python3-yaml`, installed on k8-control).
 
 Repo conventions: [`.gitattributes`](.gitattributes) stores text files with LF line endings, [`.editorconfig`](.editorconfig) sets the same for editors, and [`.gitignore`](.gitignore) keeps keys, certificates, kubeconfigs and etcd backups out of git.
+
+[`.github/dependabot.yml`](.github/dependabot.yml) has Dependabot propose a pull request each week when the GitHub Action the workflow uses, pinned by commit, has a new release.
 
 **On github.com** (needs the account's owner): under **Settings → Branches**, add a rule for `main` that requires the `validate` check to pass, so nothing unchecked lands on `main`.
 
@@ -485,7 +487,7 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | Practice | Where |
 |----------|-------|
 | Its own namespace, `ords`, so its network policy, Secrets and permissions apply to ORDS alone | `namespace.yaml` |
-| A NetworkPolicy blocks everything not listed. In: only ORDS's HTTPS port, 8443. Out: only DNS (CoreDNS), the database port and HTTPS | `network-policy.yaml` |
+| A NetworkPolicy blocks everything not listed. In: only ORDS's HTTPS port, 8443. Out: only DNS (CoreDNS), the database's own address on its port, and HTTPS | `network-policy.yaml`, `deploy-ords.sh` |
 | The Service allocates no NodePorts; ORDS is reachable only on its MetalLB address, `192.168.1.180` | `ords.yaml` |
 | From the internet, ORDS is reachable only through Cloudflare: the Service admits only Cloudflare's address ranges and the three nodes (`loadBalancerSourceRanges`), not the whole LAN, in case the router rewrites forwarded connections' source, so Cloudflare's DDoS and bot protection can't be bypassed. `ci/validate.sh` checks the ranges against Cloudflare's published list | `ords.yaml`, `ci/validate.sh` |
 | HTTPS all the way: browsers to Cloudflare, and Cloudflare to ORDS with the certificate checked (SSL mode Full (strict)) | Cloudflare (see [Public access](#public-access-through-cloudflare)) |
@@ -507,6 +509,7 @@ Commands run on k8-control as `<user>` unless marked `sudo`. ORDS lives in the `
 | Practice | Where |
 |----------|-------|
 | Passwords are typed at a prompt that doesn't echo them, never passed on a command line, and only briefly written to a private (`0700`) temporary folder | `deploy-ords.sh` |
+| Secrets are applied server-side, so no second copy of their values is kept in a `last-applied-configuration` annotation | `deploy-ords.sh` |
 | The SYS password is used only by the one-time install Job and deleted from the cluster right after, even if the script fails or is interrupted. The ORDS pods never see it | `deploy-ords.sh` |
 | The `ORDS_PUBLIC_USER` password Secret is mounted only into the init container that writes ORDS's config, where it goes into ORDS's encrypted wallet. The ORDS container itself never mounts it | `ords.yaml` |
 | The TLS key is readable only by the pod's group (`0440`) | `ords.yaml` |
@@ -597,7 +600,7 @@ Readiness uses `/apps/_/landing`, which returns `571` when ORDS can't reach the 
 | `ORA-01017` | Wrong `ORDS_PUBLIC_USER` password | Replace the Secret (see B.2) |
 | `ORA-28000` | The account is locked, often after repeated wrong passwords | Unlock it in the database, then fix the password |
 | `ORA-12514` | The listener doesn't know the service `pdb1` | Check `DB_SERVICE` in `deploy-ords.sh` against `lsnrctl status` on the database server |
-| `ORA-12541`, connect timeout, `IO Error` | No network path to `node.1apx.com:1521` | Check the database's firewall allows the workers' IPs (171, 172), and that `node.1apx.com` resolves inside the pods. If it doesn't, set `DB_HOST_IP` |
+| `ORA-12541`, connect timeout, `IO Error` | No network path to `node.1apx.com:1521` | Check the database's firewall allows the workers' IPs (171, 172), and that `node.1apx.com` resolves inside the pods. If it doesn't, set `DB_HOST_IP`. If the database's address changed, re-run `deploy-ords.sh`: the network policy only allows the address it found last time (`kubectl get networkpolicy ords -n ords -o yaml`) |
 | `UnknownHostException` | The pods can't resolve the database name | Set `DB_HOST_IP` in `deploy-ords.sh` and redeploy, or add the DNS record |
 
 `deploy-ords.sh` repeats the same login in its preflight check, so running it again shows the database's exact error.

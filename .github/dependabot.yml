@@ -1,0 +1,8 @@
+# Dependabot proposes a pull request when the GitHub Action used in .github/workflows
+# (pinned by commit) has a new release; it updates the commit and its version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

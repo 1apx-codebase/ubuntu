@@ -47,18 +47,24 @@ ORDS_TAG=${ORDS_TAG##*:}          # 26.2.3
 HOST_ALIASES="[]"
 [ -z "$DB_HOST_IP" ] || HOST_ALIASES="[{ip: \"$DB_HOST_IP\", hostnames: [\"$DB_HOST\"]}]"
 CONFIG_HASH=                      # set in step 7
+# The database's IPv4 addresses, the only ones the network policy lets the pods reach on
+# DB_PORT: DB_HOST_IP, or what DB_HOST resolves to when the script runs
+DB_IPS=$DB_HOST_IP
+ip_blocks() { local ip s=; for ip in $DB_IPS; do s="$s${s:+, }{ipBlock: {cidr: \"$ip/32\"}}"; done; echo "[$s]"; }
 render() {
   sed -e "s|__ORDS_IMAGE__|$ORDS_IMAGE|g" -e "s|__ORDS_HOSTNAME__|$ORDS_HOSTNAME|g" -e "s|__LB_IP__|$LB_IP|g" \
-      -e "s|__DB_PORT__|$DB_PORT|g" -e "s|__CONFIG_HASH__|$CONFIG_HASH|g" \
+      -e "s|__DB_PORT__|$DB_PORT|g" -e "s|__CONFIG_HASH__|$CONFIG_HASH|g" -e "s|__DB_IP_BLOCKS__|$(ip_blocks)|g" \
       -e "s|hostAliases: \[\]|hostAliases: $HOST_ALIASES|" "$1"
 }
 if [ "${1:-}" = --render ]; then
+  DB_IPS=${DB_IPS:-192.0.2.10}    # --render doesn't look DB_HOST up: a documentation address
   render "${2:?usage: $0 --render <manifest>}"
   exit 0
 fi
 [ "$(id -u)" -ne 0 ] || { echo "Run as vaviles, not root." >&2; exit 1; }
-if [ -z "$DB_HOST_IP" ] && ! getent hosts "$DB_HOST" >/dev/null; then
-  echo "$DB_HOST doesn't resolve. Add a DNS record for it, or set DB_HOST_IP in this script." >&2
+[ -n "$DB_IPS" ] || DB_IPS=$(getent ahostsv4 "$DB_HOST" | awk '{print $1}' | sort -u | xargs || true)
+if [ -z "$DB_IPS" ]; then
+  echo "$DB_HOST doesn't resolve to an IPv4 address. Add a DNS record for it, or set DB_HOST_IP in this script." >&2
   exit 1
 fi
 
@@ -84,15 +90,19 @@ ask_password() {   # ask_password "label" -> prints the password; never echoed o
   printf '%s' "$a"
 }
 
+# Secrets are applied server-side: a client-side apply would also keep a full copy of each,
+# values included, in its kubectl.kubernetes.io/last-applied-configuration annotation
+apply_secret() { kubectl apply --server-side --force-conflicts --field-manager=deploy-ords -f -; }
 secret_from_value() {   # secret_from_value name key value (keeps the value off the command line)
   printf '%s' "$3" > "$work/$2"
   kubectl create secret generic "$1" -n "$NAMESPACE" --from-file="$2=$work/$2" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --dry-run=client -o yaml | apply_secret
   rm -f "$work/$2"
 }
 
 kubectl apply -f "$MANIFESTS/namespace.yaml"
 render "$MANIFESTS/network-policy.yaml" | kubectl apply -f -
+echo "Network policy: the pods may reach the database at $DB_IPS, port $DB_PORT."
 
 # 1. TLS certificate: check it, then store chain + PKCS#8 key as the ords-tls Secret
 for f in "$CERT_FILE" "$CHAIN_FILE" "$KEY_FILE"; do
@@ -113,7 +123,7 @@ if [ -z "$cert_pub" ] || [ "$cert_pub" != "$key_pub" ]; then
   exit 1
 fi
 kubectl create secret tls ords-tls -n "$NAMESPACE" --cert="$work/tls.crt" --key="$work/tls.key" \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --dry-run=client -o yaml | apply_secret
 rm -f "$work/tls.crt" "$work/tls.key"
 echo "Certificate: $(openssl x509 -in "$SSL_DIR/$CERT_FILE" -noout -subject -enddate | tr '\n' ' ')"
 

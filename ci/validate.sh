@@ -192,30 +192,36 @@ done
 if [ "$ONLINE" = true ]; then
   ok=true
   while read -r sum u; do
-    if ! curl -fsSL "$u" -o "$work/up" || ! echo "$sum  $work/up" | sha256sum -c --quiet - 2>/dev/null; then
-      fail "upstream doesn't match its pinned hash (or can't be downloaded): $u"; ok=false
+    f="$work/upstream-$(basename "$u")"   # kept for the checks below once verified
+    if ! curl -fsSL "$u" -o "$f" || ! echo "$sum  $f" | sha256sum -c --quiet - 2>/dev/null; then
+      fail "upstream doesn't match its pinned hash (or can't be downloaded): $u"; ok=false; rm -f "$f"
     fi
   done < <(grep -v '^#' "$pins")
   [ "$ok" = false ] || pass "pinned hashes match upstream"
-  # Calico's Installation with our pod CIDR, as control-plane-init.sh applies it
-  pod_cidr=$(var "$K8S/scripts/node-prep.sh" POD_CIDR)
-  curl -fsSL "${expected[2]}" | sed "s|cidr: 192.168.0.0/16|cidr: $pod_cidr|" \
-    | python3 -c 'import sys,yaml; print(yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Installation"]))' \
-    > "$work/calico-installation.yaml"
-  check "Calico's pod CIDR is replaced, as control-plane-init.sh does" grep -q "cidr: $pod_cidr" "$work/calico-installation.yaml"
-  # metrics-server gets --kubelet-insecure-tls with the same sed as cluster-addons.sh
-  curl -fsSL "${expected[4]}" -o "$work/metrics-server.yaml"
-  sed -i "$(grep -o "sed -i '[^']*'" "$K8S/scripts/cluster-addons.sh" | sed "s/^sed -i '//; s/'$//")" "$work/metrics-server.yaml"
-  check "metrics-server gets --kubelet-insecure-tls, as cluster-addons.sh does" grep -q -- '- --kubelet-insecure-tls$' "$work/metrics-server.yaml"
-  check "Calico Installation with our pod CIDR" "${KUBECONFORM[@]}" -strict -kubernetes-version "$K8S_VERSION" \
-    -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
+  # The scripts' edits to the upstream files, made the same way on the verified copies
+  cr="$work/upstream-custom-resources.yaml" ms="$work/upstream-components.yaml"
+  if [ -f "$cr" ] && [ -f "$ms" ]; then
+    # Calico's Installation with our pod CIDR, as control-plane-init.sh applies it
+    pod_cidr=$(var "$K8S/scripts/node-prep.sh" POD_CIDR)
+    sed "s|cidr: 192.168.0.0/16|cidr: $pod_cidr|" "$cr" \
+      | python3 -c 'import sys,yaml; print(yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Installation"]))' \
+      > "$work/calico-installation.yaml"
+    check "Calico's pod CIDR is replaced, as control-plane-init.sh does" grep -q "cidr: $pod_cidr" "$work/calico-installation.yaml"
+    check "Calico Installation with our pod CIDR" "${KUBECONFORM[@]}" -strict -kubernetes-version "$K8S_VERSION" \
+      -schema-location default -schema-location "$CRDS" "$work/calico-installation.yaml"
+    # metrics-server gets --kubelet-insecure-tls with the same sed as cluster-addons.sh
+    sed -i "$(grep -o "sed -i '[^']*'" "$K8S/scripts/cluster-addons.sh" | head -1 | sed "s/^sed -i '//; s/'$//")" "$ms"
+    check "metrics-server gets --kubelet-insecure-tls, as cluster-addons.sh does" grep -q -- '- --kubelet-insecure-tls$' "$ms"
+  else
+    fail "couldn't check the scripts' edits to Calico's and metrics-server's files (download failed, above)"
+  fi
   # The ORDS Service admits Cloudflare's current IPv4 ranges (plus the nodes), no more, no less
-  cf_live=$(curl -fsSL https://www.cloudflare.com/ips-v4 | grep -oE '^[0-9.]+/[0-9]+' | sort)
+  cf_live=$(curl -fsSL https://www.cloudflare.com/ips-v4 | grep -oE '^[0-9.]+/[0-9]+' | sort || true)
   cf_repo=$(grep -v '^192\.168\.' <<<"$ranges" || true)
   if [ -n "$cf_live" ] && [ "$cf_live" = "$cf_repo" ]; then
     pass "ORDS Service allows exactly Cloudflare's current IPv4 ranges"
   else
-    fail "Cloudflare's IPv4 ranges changed: update loadBalancerSourceRanges in ords.yaml from https://www.cloudflare.com/ips-v4"
+    fail "Cloudflare's IPv4 ranges changed, or couldn't be downloaded: compare loadBalancerSourceRanges in ords.yaml with https://www.cloudflare.com/ips-v4"
   fi
 fi
 
