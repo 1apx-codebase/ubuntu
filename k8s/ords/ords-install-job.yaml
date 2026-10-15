@@ -17,6 +17,7 @@ spec:
         app: ords-install
     spec:
       restartPolicy: Never
+      hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
       securityContext:
         runAsNonRoot: true
         runAsUser: 54321            # "oracle" user in the ORDS image

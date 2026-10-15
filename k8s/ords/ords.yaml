@@ -1,9 +1,13 @@
-# ORDS: two stateless replicas, one per worker, behind a MetalLB LAN IP.
-# Applied by deploy-ords.sh, which replaces __ORDS_IMAGE__ and __LB_IP__.
+# ORDS: two stateless replicas, one per worker, behind a MetalLB LAN IP, serving HTTPS
+# with the *.1apx.com certificate. Applied by deploy-ords.sh, which replaces
+# __ORDS_IMAGE__, __ORDS_HOSTNAME__ and __LB_IP__.
 #
-# Each pod builds its own ORDS config in an emptyDir from the ords-db ConfigMap and
-# the ORDS_PUBLIC_USER password, so no shared volume is needed. The SYS password
-# is never given to these pods.
+# Each pod builds its own ORDS config in an emptyDir at start, from:
+#   ords-db ConfigMap        database host/port/service and APEX version
+#   ords-settings ConfigMap  ords-settings.conf (settings copied from the old server)
+#   ords-db-runtime Secret   ORDS_PUBLIC_USER password
+#   ords-tls Secret          certificate chain and private key
+# No shared storage is needed, and the SYS password is never given to these pods.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,6 +31,7 @@ spec:
       labels:
         app: ords
     spec:
+      hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
       securityContext:
         runAsNonRoot: true
         runAsUser: 54321            # "oracle" user in the ORDS image
@@ -42,6 +47,39 @@ spec:
             matchLabels:
               app: ords
       initContainers:
+        # APEX static images (/i/), downloaded once per worker and kept in /var/cache/ords-apex.
+        # Runs as root only to write that host directory.
+        - name: apex-images
+          image: __ORDS_IMAGE__
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              if [ -z "${APEX_VERSION:-}" ]; then echo "APEX_VERSION not set, no APEX images"; exit 0; fi
+              dir="/apex-cache/$APEX_VERSION"
+              if [ -f "$dir/.complete" ]; then echo "APEX $APEX_VERSION images already on this node"; exit 0; fi
+              tmp="$dir.tmp.$HOSTNAME"
+              rm -rf "$tmp" && mkdir -p "$tmp" && cd "$tmp"
+              echo "Downloading APEX $APEX_VERSION images..."
+              curl -fsSL --retry 3 -o apex.zip "https://download.oracle.com/otn_software/apex/apex_${APEX_VERSION}.zip"
+              jar xf apex.zip apex/images
+              rm -rf "$dir" && mv apex/images "$dir"
+              cd / && rm -rf "$tmp"
+              chmod -R a+rX "$dir" && touch "$dir/.complete"
+              echo "APEX $APEX_VERSION images ready"
+          envFrom:
+            - configMapRef:
+                name: ords-db
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: apex-cache
+              mountPath: /apex-cache
+        # Writes the ORDS config for this pod
         - name: config
           image: __ORDS_IMAGE__
           command: ["/bin/bash", "-c"]
@@ -49,14 +87,19 @@ spec:
             - |
               set -euo pipefail
               c="ords --config /etc/ords/config config"
-              $c set db.connectionType basic
               $c set db.hostname "$DB_HOST"
               $c set db.port "$DB_PORT"
               $c set db.servicename "$DB_SERVICE"
-              $c set db.username ORDS_PUBLIC_USER
+              grep -vE '^[[:space:]]*(#|$)' /etc/ords-settings/ords-settings.conf | while read -r key value; do
+                $c set "$key" "$value"
+              done
               $c set standalone.http.port 8080
-              $c set feature.sdw true
-              $c set restEnabledSql.active true
+              $c set standalone.https.port 8443
+              $c set standalone.https.cert /run/secrets/ords-tls/tls.crt
+              $c set standalone.https.cert.key /run/secrets/ords-tls/tls.key
+              if [ -n "${APEX_VERSION:-}" ]; then
+                $c set standalone.static.path "/opt/oracle/apex-cache/$APEX_VERSION"
+              fi
               pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
               printf '%s\n%s\n' "$pw" "$pw" | $c secret db.password
           envFrom:
@@ -69,19 +112,22 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/ords/config
+            - name: settings
+              mountPath: /etc/ords-settings
+              readOnly: true
             - name: runtime
               mountPath: /run/secrets/ords-runtime
               readOnly: true
       containers:
         - name: ords
           image: __ORDS_IMAGE__
-          # No command: the image's entrypoint finds the config and runs "ords serve".
-          # Don't give this container DBHOST or ORACLE_PWD, or the entrypoint tries to install ORDS.
-          env:
-            - name: ORDS_DB_WAIT_RETRY
-              value: "30"
+          # Runs ORDS directly instead of the image's entrypoint, which would switch
+          # Database Actions, REST-enabled SQL and the MongoDB API on at every start.
+          command: ["ords", "--config", "/etc/ords/config", "serve"]
           ports:
-            - name: http
+            - name: https
+              containerPort: 8443
+            - name: http             # only redirects to HTTPS (security.forceHTTPS)
               containerPort: 8080
           securityContext:
             allowPrivilegeEscalation: false
@@ -93,36 +139,63 @@ spec:
               memory: 1536Mi
             limits:
               memory: 3Gi
-          # /ords/ answers 302 as soon as ORDS is listening, even if the database is down
+          # Probes use HTTPS with the real hostname: ORDS rejects HTTPS requests whose
+          # Host doesn't match the certificate, and plain HTTP only redirects.
+          # /apps/ answers as soon as ORDS is listening, even if the database is down.
           startupProbe:
             httpGet:
-              path: /ords/
-              port: http
+              scheme: HTTPS
+              path: /apps/
+              port: https
+              httpHeaders:
+                - name: Host
+                  value: __ORDS_HOSTNAME__
             periodSeconds: 10
-            failureThreshold: 60     # up to 10 minutes, including the database wait
+            failureThreshold: 30     # up to 5 minutes
           # The landing page returns 571 when ORDS can't reach the database,
           # so a pod only receives traffic while its connection pool works
           readinessProbe:
             httpGet:
-              path: /ords/_/landing
-              port: http
+              scheme: HTTPS
+              path: /apps/_/landing
+              port: https
+              httpHeaders:
+                - name: Host
+                  value: __ORDS_HOSTNAME__
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             tcpSocket:
-              port: http
+              port: https
             periodSeconds: 20
             failureThreshold: 3
           volumeMounts:
             - name: config
               mountPath: /etc/ords/config
+            - name: tls
+              mountPath: /run/secrets/ords-tls
+              readOnly: true
+            - name: apex-cache
+              mountPath: /opt/oracle/apex-cache
+              readOnly: true
       volumes:
         - name: config
           emptyDir: {}
+        - name: settings
+          configMap:
+            name: ords-settings
         - name: runtime
           secret:
             secretName: ords-db-runtime
+        - name: tls
+          secret:
+            secretName: ords-tls
+            defaultMode: 0440        # readable by the oracle group (fsGroup), not others
+        - name: apex-cache
+          hostPath:
+            path: /var/cache/ords-apex
+            type: DirectoryOrCreate
 ---
 # Keep at least one ORDS pod running during node drains and upgrades
 apiVersion: policy/v1
@@ -147,9 +220,12 @@ spec:
   type: LoadBalancer
   selector:
     app: ords
-  # Database Actions keeps a session in the ORDS process, so keep each client on one pod
+  # APEX and Database Actions keep sessions in the ORDS process, so keep each client on one pod
   sessionAffinity: ClientIP
   ports:
-    - name: http
+    - name: https
+      port: 443
+      targetPort: https
+    - name: http             # redirects to https://
       port: 80
       targetPort: http

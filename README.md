@@ -71,9 +71,14 @@ All versions are pinned in the scripts, so every node gets exactly the same soft
 
 ### Before you start
 
-- **Database details.** ORDS runs in the cluster and connects to your existing Oracle database. You need its hostname, listener port (usually 1521) and the **PDB service name** (not the CDB). The SYS password is needed once, to install the ORDS schema. The workers must be able to reach the database's listener port.
+- **Existing database and ORDS.** ORDS in the cluster connects to the database your current ORDS server uses: `node.1apx.com:1521`, service `pdb1`, as `ORDS_PUBLIC_USER`. You need that user's existing password. The SYS password is only needed if the ORDS schema has to be installed or upgraded (see Step 6). The workers must be able to reach port 1521 on the database server.
+- **Versions in the database.** The ORDS image version must match the ORDS version installed in the database, and the APEX images must match its APEX version. Step 6 checks both and tells you if anything needs changing.
+- **Certificate.** Put the `*.1apx.com` files in `ssl/` at the top of this repo. `.gitignore` keeps that folder, and any `*.key`, `*.p12` and `*.jks` file, out of git. Step 6 uses `ssl/1apx_com.crt`, `ssl/1apx_com.ca-bundle` and `ssl/1apx.key`. The certificate covers `*.1apx.com` and `1apx.com` and expires on **2 January 2027**.
 - **Reserve the addresses** `192.168.1.171`, `192.168.1.172` and `192.168.1.180`–`192.168.1.189` on the router, or exclude them from its DHCP pool. All of them answered no ping when this was written.
-- **DNS (recommended).** There are no DNS records for `*.1apx.com`. The scripts add the three nodes to `/etc/hosts` on every node, but A records on your DNS server let other machines use the names too.
+- **DNS records.** None of the cluster names resolve today: `1apx.com` is on Cloudflare, but `k8-control`, the workers, `node.1apx.com` and `ords.1apx.com` have no records. You need:
+  - `ords.1apx.com` → `192.168.1.180`, the name users and browsers will use for ORDS. Put it on your LAN DNS server (the router), or in Cloudflare if you don't mind the private address being public.
+  - `node.1apx.com` → the database server's IP. Or set `DB_HOST_IP` in `deploy-ords.sh`, which maps the name for the ORDS pods only.
+  - Optionally, the three nodes. The scripts add them to `/etc/hosts` on every node anyway.
 - **Proxmox details.** Check the VM storage name with `pvesm status` and the LAN bridge with `ip -br link` on the Proxmox host. The script assumes `local-lvm` and `vmbr0`, and needs Proxmox VE 7.2 or later.
 - **Password SSH to k8-control.** The VM script copies k8-control's public key with `scp`, so the Proxmox host must be able to log in to `vaviles@192.168.1.170` with a password once.
 
@@ -137,35 +142,47 @@ Script: [`k8s/cluster-addons.sh`](k8s/cluster-addons.sh). On k8-control, run `k8
 
 ### Step 6: Deploy ORDS
 
-Script: [`k8s/ords/deploy-ords.sh`](k8s/ords/deploy-ords.sh), which uses [`k8s/ords/ords-install-job.yaml`](k8s/ords/ords-install-job.yaml) and [`k8s/ords/ords.yaml`](k8s/ords/ords.yaml).
-First set `DB_HOST`, `DB_PORT` and `DB_SERVICE` at the top of `deploy-ords.sh`. Then, on k8-control, run `k8s/ords/deploy-ords.sh` as `vaviles`.
+Script: [`k8s/ords/deploy-ords.sh`](k8s/ords/deploy-ords.sh). It uses [`k8s/ords/ords-settings.conf`](k8s/ords/ords-settings.conf), [`k8s/ords/ords.yaml`](k8s/ords/ords.yaml), [`k8s/ords/ords-preflight.yaml`](k8s/ords/ords-preflight.yaml) and [`k8s/ords/ords-install-job.yaml`](k8s/ords/ords-install-job.yaml).
+Check the variables at the top of `deploy-ords.sh`, which already hold your current database details. Then, on k8-control, run `k8s/ords/deploy-ords.sh` as `vaviles`.
 
-1. Creates the `ords` namespace.
-2. Asks twice for each of two passwords, without echoing or saving them. One is a new password for `ORDS_PUBLIC_USER`, the account ORDS connects as. The other is your database's SYS password. Both are stored as Kubernetes Secrets, never in this repo.
-3. Starts a test pod that checks the database listener is reachable from inside the cluster, and stops if it isn't. The test pod uses the ORDS image, so it also downloads that image ahead of time.
-4. Saves the database host, port and service in a ConfigMap.
-5. Runs a one-time Job that installs the ORDS schema in the database, or upgrades it if it's already there. Then it **deletes the SYS password Secret**, so SYS credentials don't stay in the cluster. A future upgrade asks for it again.
-6. Deploys ORDS:
-   - **Two replicas**, spread across the two workers, with a PodDisruptionBudget so at least one keeps running during node maintenance.
-   - **No shared storage.** Each pod writes its own ORDS config from the ConfigMap and the `ORDS_PUBLIC_USER` password when it starts, and never sees the SYS password.
-   - **Locked down:** runs as the image's `oracle` user (UID 54321) with no extra Linux capabilities, a memory limit of 3 GiB and the default seccomp profile.
-   - **Probes:** a startup probe allows up to 10 minutes. The readiness probe uses `/ords/_/landing`, which returns an error when ORDS can't reach the database, so traffic only goes to pods with a working connection. (`/ords/` answers even when the database is down, so it isn't used for readiness.)
-   - **Service:** a `LoadBalancer` on `192.168.1.180`, port 80, with client-IP session affinity so Database Actions sessions stay on one pod.
+**ORDS settings.** `ords-settings.conf` holds your existing server's `settings.xml` and `pool.xml` settings, one `key value` per line. Every pod applies them when it starts. Changes from the old server:
 
-ORDS is then at `http://192.168.1.180/ords/`, and Database Actions (SQL Developer Web) is at `http://192.168.1.180/ords/sql-developer`.
+- **Same:** context path `/apps`, APEX static files at `/i`, `plsql.gateway.mode direct` with `ords_util.authorize_plsql_gateway`, `misc.defaultPage apex`, `security.forceHTTPS true`, `database.api.enabled true`, Database Actions and REST-enabled SQL off, and all the `jdbc.*` timeouts and limits.
+- **Halved:** the connection pool, because there are now two ORDS pods. Each pod gets `InitialLimit 15`, `MinLimit 25` and `MaxLimit 150`, which add up to the old server's 30 / 50 / 300. Raise them if one pod has to carry all the traffic.
+- **Port 8443** for HTTPS inside the pod, instead of 443, so ORDS runs without root. The service still listens on 443.
+- **Left out:** `standalone.use.https` and `standalone.use.ssl.cert` (old settings, unused by current ORDS), the old server's file paths (`standalone.access.log`, `standalone.doc.root`), the empty `misc.compress`, and the `default` → `plsql.gateway.mode` line, which isn't a real setting.
 
-To upgrade ORDS, change `ORDS_IMAGE` in `deploy-ords.sh` to a newer tag and run it again. It asks for the SYS password, upgrades the schema, then rolls the pods one at a time.
+**What the script does:**
+
+1. **Certificate.** Checks that it covers `ords.1apx.com` and hasn't expired, and warns 30 days before expiry. Checks that the key matches. Joins the certificate and intermediates into one chain, converts the key to PKCS#8, and stores both as the `ords-tls` Secret. The conversion matters: tested with this ORDS image, a PKCS#1 key (`BEGIN RSA PRIVATE KEY`, like `ssl/1apx.pem`) stops ORDS from starting.
+2. **ORDS_PUBLIC_USER password.** Asks for it twice, without echoing or saving it, and stores it as a Secret.
+3. **Preflight check.** A short-lived pod logs in to `node.1apx.com:1521/pdb1` as `ORDS_PUBLIC_USER`. That proves the network path and the password, and reports the ORDS and APEX versions installed in the database. If the login fails, the script shows the database's error and stops. This first pod also downloads the ORDS image (about 700 MB).
+4. **APEX images.** Uses the database's APEX version, unless you set `APEX_VERSION`, and checks that Oracle publishes `apex_<version>.zip` for it. Each worker downloads the images once (about 300 MB) into `/var/cache/ords-apex`, and pods on that worker reuse them. The workers need HTTPS access to `download.oracle.com`.
+5. **ORDS version.** If the database's ORDS version differs from the image (`ORDS_IMAGE`, 26.2.3 by default), the script stops. Either set `ORDS_IMAGE` to the database's version (tags 25.1.1 to 26.3.0 are available), or set `INSTALL_OR_UPGRADE_SCHEMA=true`. In that case it asks for the SYS password, runs the one-time install/upgrade Job, and **then deletes the SYS password** from the cluster. Upgrading the schema affects every ORDS server using this database, so upgrade your existing server to the same version.
+6. **Deploys ORDS:**
+   - **Two replicas**, spread across the two workers, with a PodDisruptionBudget so one keeps running during node maintenance.
+   - **No shared storage.** Each pod writes its own ORDS config when it starts, and never sees the SYS password.
+   - **Runs `ords serve` directly** instead of the image's entrypoint. The entrypoint turns on Database Actions, REST-enabled SQL and the MongoDB API at every start, which would override your settings.
+   - **Locked down:** runs as the image's `oracle` user (UID 54321) with no extra Linux capabilities and a 3 GiB memory limit. Only the step that writes the APEX images into the worker's cache runs as root.
+   - **Health checks** connect over HTTPS and send `Host: ords.1apx.com`, because ORDS rejects HTTPS requests whose host doesn't match the certificate. Readiness uses `/apps/_/landing`, which fails (`571`) when ORDS can't reach the database, so traffic only goes to pods with a working connection.
+   - **Service** on `192.168.1.180`: port **443** for HTTPS, and port 80, which redirects to `https://ords.1apx.com/...`. It has client-IP session affinity, so APEX sessions stay on one pod.
+
+**Rehearsed on k8-control (2026-10-15):** the pod's config script was run with `ords-settings.conf` and the real certificate, then ORDS 26.2.3 was started from it. ORDS served the full Sectigo chain, which verified cleanly against the public CAs. HTTP redirected to HTTPS, and the health checks behaved as described. The database login itself hasn't been tested, because `node.1apx.com` doesn't resolve from here.
+
+ORDS is then at **`https://ords.1apx.com/apps/`**, with APEX at `https://ords.1apx.com/apps/r/...` (or `/apps/f?p=...`), the same paths as on the old server.
+
+To change a setting, edit `ords-settings.conf` and run the script again. It replaces the pods one at a time.
 
 ### Step 7: Check the cluster
 
 On k8-control, as `vaviles`:
 
 - `kubectl get nodes -o wide` shows three `Ready` nodes.
-- `kubectl get pods -A` shows everything `Running`. The `ords-install` Job shows `Completed`.
-- `kubectl get pods -n ords -o wide` shows one ORDS pod on each worker.
-- `kubectl logs -n ords deploy/ords` includes "Database connection successful".
+- `kubectl get pods -A` shows everything `Running`.
+- `kubectl get pods -n ords -o wide` shows one ORDS pod on each worker, both `1/1 Ready`. A pod stays `0/1` while it can't reach the database.
+- `kubectl logs -n ords deploy/ords` shows "HTTPS listening on host: 0.0.0.0 port: 8443" and no pool errors.
+- `curl -sI https://ords.1apx.com/apps/` returns a `302` to the APEX start page. Running `curl -vI` also shows the `*.1apx.com` certificate.
 - `kubectl top nodes` shows CPU and memory for each node.
-- `http://192.168.1.180/ords/` opens the ORDS landing page in a browser on the LAN.
 
 ### Running the cluster
 
@@ -173,8 +190,9 @@ On k8-control, as `vaviles`:
 - **Certificates** that kubeadm creates expire after one year, and upgrading the control plane renews them. Check them with `sudo kubeadm certs check-expiration`.
 - **Upgrades.** Move up one minor version at a time (1.36 → 1.37), control plane first, then each worker. Drain each worker with `kubectl drain <node> --ignore-daemonsets` first; the ORDS PodDisruptionBudget keeps one replica up. Change `K8S_MINOR` and `K8S_VERSION` in `node-prep.sh` and the version in `kubeadm-config.yaml`, and upgrade Calico when its tested versions require it.
 - **OS updates.** `apt upgrade` is safe because the Kubernetes packages are held. Reboot one node at a time, draining workers first.
-- **HTTPS.** ORDS is served over plain HTTP on the LAN. Before exposing it beyond the LAN, add TLS: either a Gateway API controller with cert-manager in front of the ORDS service, or a certificate and key mounted in the ORDS config at `ssl/cert.crt` and `ssl/key.key`, which makes the image listen on 8443.
-- **Secrets.** Never commit passwords to this repo. To change the `ORDS_PUBLIC_USER` password, change it in the database, delete the `ords-db-runtime` Secret, and run `deploy-ords.sh` again.
+- **Certificate renewal.** The `*.1apx.com` certificate expires on 2 January 2027. Put the renewed files in `ssl/` with the same names, or change `CERT_FILE`, `CHAIN_FILE` and `KEY_FILE`. Then run `deploy-ords.sh` again, which updates the `ords-tls` Secret and restarts the pods one at a time.
+- **ORDS upgrades.** Set `ORDS_IMAGE` to the new tag and `INSTALL_OR_UPGRADE_SCHEMA=true`, run `deploy-ords.sh`, then set it back to `false`. Upgrade the old ORDS server too, or retire it.
+- **Secrets.** Never commit passwords or keys to this repo; `ssl/` is git-ignored. To change the `ORDS_PUBLIC_USER` password, change it in the database, run `kubectl delete secret ords-db-runtime -n ords`, then run `deploy-ords.sh` again. The old ORDS server needs the new password too.
 - **Single control plane.** If k8-control is down, running ORDS pods keep serving, but you can't change the cluster until it's back. For high availability, add two more control-plane nodes behind `k8-control.1apx.com` (kubeadm supports this because the endpoint is a name), and restore from the etcd backups if needed.
 - **Starting over on a node.** `sudo kubeadm reset` removes Kubernetes state from a node. On the control plane, that deletes the cluster.
 

@@ -1,0 +1,52 @@
+# One-off pod run by deploy-ords.sh before deploying ORDS. It logs in to the database
+# as ORDS_PUBLIC_USER (which proves the network path and the password) and reports
+# the ORDS schema and APEX versions installed there. Replaces __ORDS_IMAGE__.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ords-preflight
+  namespace: ords
+  labels:
+    app: ords-preflight
+spec:
+  restartPolicy: Never
+  hostAliases: []                # filled in by deploy-ords.sh when DB_HOST_IP is set
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 54321
+    fsGroup: 54321
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: check
+      image: __ORDS_IMAGE__
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -uo pipefail
+          pw=$(cat /run/secrets/ords-runtime/ORACLE_USER_PWD)
+          sql -S -L /nolog <<SQL
+          whenever sqlerror exit failure
+          connect ORDS_PUBLIC_USER/"${pw}"@//${DB_HOST}:${DB_PORT}/${DB_SERVICE}
+          set heading off feedback off pagesize 0 verify off
+          select 'LOGIN_OK' from dual;
+          whenever sqlerror continue
+          select 'ORDS_VERSION=' || version from ords_metadata.ords_version;
+          select 'APEX_VERSION=' || version_no from apex_release;
+          exit
+          SQL
+      envFrom:
+        - configMapRef:
+            name: ords-db
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: runtime
+          mountPath: /run/secrets/ords-runtime
+          readOnly: true
+  volumes:
+    - name: runtime
+      secret:
+        secretName: ords-db-runtime
